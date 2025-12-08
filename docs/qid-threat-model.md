@@ -1,229 +1,245 @@
-# DigiByte Q‑ID — Threat Model (Full Specification)
+# DigiByte Q-ID — Threat Model
 
-Status: **v1 – Complete Draft**
+Status: **draft – v0.2 (signed flows + PQC-ready)**
+
+This document captures the *current* threat model for DigiByte Q-ID as
+implemented in this repo. It will evolve as we add PQC backends and
+deeper Guardian / Shield integration.
 
 ---
 
 ## 1. Assets to Protect
 
-Q‑ID protects a minimal but highly sensitive set of authentication and identity assets:
+1. **Authentication sessions**
+   - Fresh Q-ID login attempts in progress.
+   - Established application sessions created from successful logins.
 
-### **1.1 Identity Keys**
-- User long‑term post‑quantum keypair (PQC).
-- Optional transitional classical keypair.
-- Service’s identity public key.
+2. **Identity material**
+   - Long-term Q-ID keypairs (wallet-side).
+   - Service-side verification keys / secrets.
+   - Binding between a Q-ID identity and an application account.
 
-### **1.2 Device Bindings**
-- Secure binding between a wallet installation and a Q‑ID identity.
-- Biometric or secure enclave–based unlock paths.
+3. **Device bindings**
+   - Association of a Q-ID identity with a specific wallet device.
 
-### **1.3 Authentication Sessions**
-- Login requests.
-- Registration requests.
-- Nonces and session identifiers.
+4. **Service bindings**
+   - Mapping of `(service_id, callback_url)` to a relying party.
+   - Records of which addresses / keys have logged into which service.
 
-### **1.4 Service Bindings**
-- Relationship between a service (domain) and user identity.
-- Callback URLs tied to those relationships.
-
-### **1.5 Integrity of Communication**
-- QR payloads.
-- Encoded URIs.
-- Wallet → service response payloads.
+5. **Audit & telemetry**
+   - Logs of successful / failed Q-ID logins.
+   - Signals that may flow into Guardian / Shield for anomaly detection.
 
 ---
 
 ## 2. Adversaries
 
-### **2.1 Network Attacker (MITM)**
-Capabilities:
-- Observe, intercept, or modify traffic.
-- Replace callback URLs.
-- Replay login payloads.
+1. **Network attacker**
+   - Can observe, modify, delay, or replay traffic between:
+     - browser ↔ service
+     - wallet ↔ service
+   - Cannot break standard TLS if correctly configured.
 
-### **2.2 QR Payload Manipulator**
-Capabilities:
-- Replace QR codes displayed on a webpage.
-- Embed malicious domains or altered nonce values.
+2. **Malicious service**
+   - A service that attempts to trick a wallet into:
+     - signing for the wrong `service_id`,
+     - leaking keys or sensitive data.
 
-### **2.3 Device Compromise**
-Capabilities:
-- Malware reading keys if device storage is broken.
-- Keylogging or screen recording attacks.
+3. **Malicious wallet / app**
+   - A compromised / fake wallet that produces bogus Q-ID responses.
 
-### **2.4 Fake Services (Phishing)**
-Capabilities:
-- Clone a legitimate website.
-- Use legitimate-looking QR codes to steal login attempts.
+4. **Compromised endpoint**
+   - User device with malware.
+   - Service backend with partial compromise.
 
-### **2.5 Fake Wallet Applications**
-Capabilities:
-- Pretend to be a real Q‑ID wallet.
-- Trick users into approving malicious actions.
+5. **Replay attacker**
+   - Tries to reuse previously captured Q-ID login responses.
 
-### **2.6 Replay Attackers**
-Capabilities:
-- Capture a legitimate login QR.
-- Reuse it against the service later.
-
-### **2.7 Quantum Adversary (Future)**
-Capabilities:
-- Break classical ECDSA/Schnorr.
-- Break non‑PQC encryption operations.
-- Attempt large-scale identity correlation.
+6. **Future quantum attacker**
+   - Can eventually break classical public-key schemes.
+   - Motivates migration to ML-DSA / Falcon / hybrid backends.
 
 ---
 
-## 3. Attack Surfaces
+## 3. Trust Assumptions
 
-### **3.1 QR Payload Encoding/Decoding**
-- Modification of JSON components.
-- Removal or replacement of key fields.
-- Injection of malicious callback URLs.
-
-### **3.2 Callback URLs**
-- Domain mismatches.
-- Downgrade from HTTPS to HTTP.
-- Open redirect exploits.
-
-### **3.3 Wallet-Side Display**
-- Incorrect or missing domain verification.
-- Poor UX that hides critical security information.
-
-### **3.4 Service Endpoints**
-- Failure to validate signatures.
-- Failure to validate nonce freshness.
-- Acceptance of malformed payloads.
-
-### **3.5 Randomness / Nonce Generation**
-- Predictable nonces may enable session hijacking.
-
-### **3.6 Device OS Compromise**
-- Jailbroken or rooted devices.
-- Weak biometric fallback paths.
-
-### **3.7 Out-of-Band Phishing**
-- Attackers sending QR codes via email/message.
-- Social engineering.
+- Services correctly configure **TLS** on `callback_url`.
+- Wallets store private keys in secure storage (OS keystore, hardware,
+  etc.).
+- Nonces are generated with sufficient entropy and are not reused.
+- The dev HMAC backend is used **only** for development / testing, not
+  for production deployments.
+- PQC / hybrid backends will be deployed with appropriate key management
+  and rotation policies.
 
 ---
 
-## 4. Threats & Mitigations
+## 4. Attack Scenarios & Mitigations
 
-### **4.1 QR Code Tampering**
-**Threat:** Attacker replaces displayed QR with malicious one.  
+### 4.1. Login request tampering
+
+**Goal:** Attacker changes the Q-ID login request (service_id, callback).
+
+- Example: Changing `service_id` from `example.com` to `evil.com`.
+
 **Mitigations:**
-- Wallet displays **service_id** prominently.
-- Service signs the login/registration payload (future).
-- Hash commitments to payload contents.
+
+- Wallet uses `parse_login_request_uri(...)` and:
+  - checks `service_id` and `callback_url` against the **expected
+    service** (`QIDServiceConfig`).
+- Helpers such as `prepare_signed_login_response(...)` enforce these
+  checks before signing.
+
+**Residual risk:** If a wallet integrates Q-ID without performing these
+checks, it may be tricked into signing for an unexpected service. The
+reference implementation *must* be reused or mirrored carefully.
 
 ---
 
-### **4.2 Replay Attacks**
-**Threat:** Captured Q‑ID login request reused later.  
+### 4.2. Response tampering
+
+**Goal:** Attacker modifies the Q-ID login response payload on the wire.
+
 **Mitigations:**
-- Strict nonce freshness enforcement.
-- Service stores used nonces temporarily.
-- Wallet may include timestamp/expiry.
+
+- Every login response is **signed**:
+  - wallet uses `sign_payload(...)` over `response_payload`.
+  - server uses `verify_signed_login_response_server(...)` to validate.
+- Any modification to:
+  - `nonce`,
+  - `service_id`,
+  - `callback_url`,
+  - `address`,
+  - `pubkey`,
+  - `key_id`,
+  will cause signature verification to fail.
+
+**Residual risk:** If a service skips verification or uses the wrong
+verification key, it may accept tampered responses.
 
 ---
 
-### **4.3 MITM Modification of Callback URL**
-**Threat:** Attacker intercepts Q‑ID response and sends altered callback.  
+### 4.3. Replay of old responses
+
+**Goal:** Attacker replays an old, valid response to gain access.
+
+**Mitigations (recommended patterns):**
+
+- Nonces must be:
+  - **unique** per login attempt,
+  - stored server-side until consumed,
+  - marked as *used* after first successful verification.
+- Services should reject:
+  - responses for unknown / expired nonces,
+  - responses where the same nonce was already used.
+
+**Residual risk:** If a service does not track nonces, replay attacks
+are possible even though signatures are valid.
+
+---
+
+### 4.4. Phishing / lookalike services
+
+**Goal:** Trick users into scanning a QR code belonging to a malicious
+service that visually looks like a trusted one.
+
 **Mitigations:**
-- Wallet enforces HTTPS only.
-- Wallet compares domain shown in QR to callback target.
-- Payload signing (future).
+
+- Wallets should display:
+  - `service_id`,
+  - `callback_url` (or a safe, human-friendly alias),
+  and allow the user to **cancel** if it looks suspicious.
+- Advanced wallets can:
+  - maintain a **trusted service directory**,
+  - warn when logging into an unknown / untrusted `service_id`.
+
+**Residual risk:** Highly convincing phishing pages may still succeed if
+users ignore warnings.
 
 ---
 
-### **4.4 Fake Service / Phishing**
-**Threat:** User scans QR for a fake website.  
+### 4.5. Compromised wallet device
+
+**Goal:** Malware on the user's device steals keys or signs unwanted
+logins.
+
 **Mitigations:**
-- Wallet displays:
-  - Domain
-  - Requested action
-  - Risk warning if mismatched
-- Service identity keys pinned in wallet (future).
+
+- Use OS / hardware keystores for key storage (beyond scope of this
+  repo).
+- Require local user interaction (biometrics / PIN) before signing.
+- Guardian / Shield can ingest Q-ID login telemetry to:
+  - detect unusual patterns (new IP / device / geolocation),
+  - flag risky sessions.
+
+**Residual risk:** A fully compromised device can still sign logins;
+detection may be delayed.
 
 ---
 
-### **4.5 Fake Wallet Apps**
-**Threat:** Malicious app signs on behalf of user.  
+### 4.6. Compromised service backend
+
+**Goal:** Attacker controls the service's server partially or fully.
+
 **Mitigations:**
-- Open-source reference wallet.
-- Verified builds.
-- OS-level app signing.
-- Biometric confirmation for every login.
+
+- Q-ID ensures that *logins themselves* are cryptographically verified,
+  but cannot protect:
+  - local database integrity,
+  - session storage,
+  - business logic abuses.
+
+**Residual risk:** If the service is fully compromised, Q-ID cannot
+guarantee account safety; it only guarantees that logins came from a
+wallet that had the key.
 
 ---
 
-### **4.6 Compromised Device**
-**Threat:** Malware steals keys.  
+### 4.7. Quantum adversary (future)
+
+**Goal:** Break classical signatures used in early Q-ID deployments.
+
 **Mitigations:**
-- Use secure enclave / hardware-backed key storage.
-- PQC key types resistant to extraction.
-- Enforce biometrics on sensitive actions.
+
+- Q-ID is designed to support **pluggable crypto backends** via
+  `qid.crypto`:
+  - current: `dev-hmac` (testing),
+  - future: ML-DSA, Falcon, hybrid schemes.
+- Protocol messages can carry:
+  - `key_id`,
+  - backend algorithm identifiers,
+  enabling gradual migration.
+
+**Residual risk:** Deployments that never migrate away from classical
+crypto are vulnerable once practical quantum attacks exist.
 
 ---
 
-### **4.7 Quantum Attacks**
-**Threat:** Future PQ computers break classical cryptography.  
-**Mitigations:**
-- PQC-first design (Dilithium or equivalent).
-- Hybrid classical+PQC signatures (optional).
-- Future‑proofing by modular crypto layer in codebase.
+## 5. Guardian / Shield Integration Points
+
+Q-ID events are natural inputs to the larger **DigiByte Quantum Shield**
+stack:
+
+- **Sentinel / DQSN / ADN**:
+  - correlate login events with on-chain / node telemetry.
+- **Guardian / QWG / Adaptive Core**:
+  - assign risk scores to identities, devices, services.
+  - trigger additional checks or lockouts on suspicious activity.
+
+These integrations are not yet implemented in this repo, but the
+structures (`response_payload`, `service_id`, `address`, `key_id`) are
+designed to feed them.
 
 ---
 
-## 5. Trust Assumptions
+## 6. Open Questions & Future Work
 
-### **5.1 The Wallet**
-- Stores private keys securely.
-- Displays correct service identity.
-- Validates payload structure strictly.
+- How should services publish and rotate their verification keys?
+- How should wallets present service identity in a trusted way
+  (UI / directories / DNS-based bindings)?
+- What is the recommended PQC backend ordering (pure PQC vs. hybrid)?
+- How do we best encode algorithm identifiers for long-term
+  compatibility?
 
-### **5.2 The Service**
-- Verifies signatures.
-- Enforces nonce uniqueness.
-- Implements strong TLS.
-- Protects stored identity bindings.
-
-### **5.3 The User**
-- Confirms the domain before approving login.
-- Uses non‑compromised device.
-- Does not approve suspicious prompts.
-
----
-
-## 6. Residual Risks
-
-### **6.1 Social Engineering**
-No system can fully protect against skilled manipulation.
-
-### **6.2 Compromised Operating System**
-Rooted/jailbroken devices remain high-risk.
-
-### **6.3 QR Scanning in Hostile Environments**
-Attackers could place altered QR codes over real ones.
-
-### **6.4 Slow Adoption of PQC Standards**
-Mixed environments may delay full PQ security.
-
-### **6.5 Side-Channel Attacks on Mobile Hardware**
-Out of scope but a theoretical long-term risk.
-
----
-
-## 7. Summary
-
-Q‑ID significantly raises security guarantees above classical Digi‑ID by adding:
-
-- PQC identity foundations  
-- Strong nonce‑based anti‑replay  
-- Clear wallet-side domain verification  
-- Clean separation of service vs. wallet roles  
-- Extensible protocol for future signing and binding
-
-This threat model will evolve as the protocol grows, especially once PQ signature integration and multi-device identity binding are implemented.
-
+This threat model will be updated as we gain more feedback from
+integrators and as the DigiByte ecosystem adopts Q-ID in production.
