@@ -203,8 +203,8 @@ wallet that had the key.
 
 - Q-ID is designed to support **pluggable crypto backends** via
   `qid.crypto`:
-  - current: `dev-hmac` (testing),
-  - future: ML-DSA, Falcon, hybrid schemes.
+  - current: `dev-hmac-sha256` (testing),
+  - plus PQC stubs for ML-DSA, Falcon, and hybrid.
 - Protocol messages can carry:
   - `key_id`,
   - backend algorithm identifiers,
@@ -212,6 +212,43 @@ wallet that had the key.
 
 **Residual risk:** Deployments that never migrate away from classical
 crypto are vulnerable once practical quantum attacks exist.
+
+---
+
+### 4.8. Algorithm downgrade / confusion
+
+**Goal:** Trick a verifier into accepting a response signed with a weaker
+algorithm than expected.
+
+**Mitigations:**
+
+- Algorithm identifiers are explicit (`DEV_ALGO`, `ML_DSA_ALGO`,
+  `FALCON_ALGO`, `HYBRID_ALGO`).
+- Backends produce signatures that are **not interchangeable**:
+  - PQC stubs include an algorithm prefix in the signed blob.
+  - Hybrid signatures combine two MACs in a fixed layout.
+- Services should enforce a policy such as:
+  - “internet-facing logins must use PQC or hybrid backends only”.
+
+**Residual risk:** Misconfigured services that accept all algorithms
+without policy checks may weaken their own security posture.
+
+---
+
+### 4.9. Cross-service replay / confusion
+
+**Goal:** Reuse a response intended for `service_id = A` to log into
+`service_id = B`.
+
+**Mitigations:**
+
+- `service_id` and `callback_url` are part of the signed payload.
+- The reference verification helpers check both fields.
+- Wallet-side helpers validate that scanned URIs match the expected
+  service.
+
+**Residual risk:** If a service ignores `service_id` or a wallet signs
+for arbitrary URIs, cross-service confusion is possible.
 
 ---
 
@@ -226,9 +263,16 @@ stack:
   - assign risk scores to identities, devices, services.
   - trigger additional checks or lockouts on suspicious activity.
 
+Examples:
+
+- Sudden spike in failed Q-ID logins from a single IP range.
+- Logins for the same identity from impossible geolocations.
+- An address involved in suspected attacks attempting to log into
+  multiple services.
+
 These integrations are not yet implemented in this repo, but the
-structures (`response_payload`, `service_id`, `address`, `key_id`) are
-designed to feed them.
+structures (`response_payload`, `service_id`, `address`, `key_id`,
+`algorithm`) are designed to feed them.
 
 ---
 
@@ -240,6 +284,8 @@ designed to feed them.
 - What is the recommended PQC backend ordering (pure PQC vs. hybrid)?
 - How do we best encode algorithm identifiers for long-term
   compatibility?
+- How should Guardian / Shield fuse Q-ID telemetry with node-level
+  signals for richer anomaly detection?
 
 This threat model will be updated as we gain more feedback from
 integrators and as the DigiByte ecosystem adopts Q-ID in production.
