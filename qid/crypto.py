@@ -139,6 +139,15 @@ def generate_keypair(algorithm: str = DEV_ALGO) -> QIDKeyPair:
     return QIDKeyPair(algorithm=alg, secret_key=_b64encode(secret), public_key=_b64encode(pub))
 
 
+def generate_dev_keypair() -> QIDKeyPair:
+    """
+    Convenience wrapper for the dev backend.
+
+    Kept for backward compatibility with existing tests/integrations.
+    """
+    return generate_keypair(DEV_ALGO)
+
+
 def sign_payload(payload: Dict[str, Any], keypair: QIDKeyPair) -> str:
     from qid.pqc_backends import PQCBackendError, enforce_no_silent_fallback_for_alg, liboqs_sign, selected_backend
 
