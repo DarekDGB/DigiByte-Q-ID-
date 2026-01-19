@@ -5,7 +5,7 @@ Guardrails:
 - CI-safe by default: repo runs without oqs/liboqs installed.
 - No silent fallback: if QID_PQC_BACKEND is selected for PQC algorithms,
   signing MUST fail-closed when backend isn't available.
-- Verification MUST be fail-closed (return False to caller).
+- Verification MUST be fail-closed (return False to caller where appropriate).
 
 Author: DarekDGB
 License: MIT (see repo LICENSE)
@@ -20,11 +20,10 @@ class PQCBackendError(RuntimeError):
     """Raised when a real PQC backend is required but unavailable."""
 
 
-# QID algorithm IDs (imported lazily by callers sometimes, but safe here)
+# QID algorithm IDs
 ML_DSA_ALGO = "pqc-ml-dsa"
 FALCON_ALGO = "pqc-falcon"
 HYBRID_ALGO = "pqc-hybrid-ml-dsa-falcon"
-
 
 # liboqs algorithm names
 _OQS_ALG_BY_QID = {
@@ -38,15 +37,30 @@ def selected_backend() -> str | None:
     return v or None
 
 
+def require_real_pqc() -> bool:
+    """
+    Backward-compatible helper for tests:
+    True iff a PQC backend has been explicitly selected.
+    """
+    return selected_backend() is not None
+
+
 def _oqs_alg_for(qid_alg: str) -> str:
-    # IMPORTANT: validate alg BEFORE importing oqs so tests that expect ValueError
-    # don't fail due to missing oqs.
+    # Validate alg BEFORE importing oqs (tests expect ValueError for unsupported alg)
     if qid_alg not in (ML_DSA_ALGO, FALCON_ALGO):
         raise ValueError(f"Unsupported PQC alg: {qid_alg!r}")
     return _OQS_ALG_BY_QID[qid_alg]
 
 
 def _import_oqs():
+    """
+    Import oqs (liboqs-python) lazily.
+
+    Fail-closed:
+    - If missing -> PQCBackendError
+    - If import succeeds but module is not a usable oqs module -> PQCBackendError
+      (important for tests that monkeypatch _import_oqs to return object()).
+    """
     try:
         import oqs  # type: ignore
     except Exception as e:  # pragma: no cover
@@ -54,6 +68,11 @@ def _import_oqs():
             "QID_PQC_BACKEND=liboqs selected but 'oqs' module is not available. "
             'Install optional deps: pip install -e ".[dev,pqc]"'
         ) from e
+
+    # Ensure it looks like the expected liboqs-python module
+    if not hasattr(oqs, "Signature"):
+        raise PQCBackendError("Imported 'oqs' but it does not expose oqs.Signature (invalid backend)")
+
     return oqs
 
 
@@ -61,8 +80,9 @@ def enforce_no_silent_fallback_for_alg(alg: str) -> None:
     """
     If a real backend is selected, we must not silently use stub crypto for PQC algs.
 
-    This function should raise if backend is selected for a PQC algorithm but
-    backend isn't available (e.g., oqs missing).
+    Raises PQCBackendError if:
+    - backend is unknown
+    - backend is selected but unavailable/misconfigured
     """
     backend = selected_backend()
     if backend is None:
@@ -72,16 +92,13 @@ def enforce_no_silent_fallback_for_alg(alg: str) -> None:
         raise PQCBackendError(f"Unknown QID_PQC_BACKEND: {backend!r}")
 
     if alg in {ML_DSA_ALGO, FALCON_ALGO, HYBRID_ALGO}:
-        # Backend selected -> must exist, otherwise fail closed.
         _import_oqs()
         return
 
 
 def liboqs_sign(qid_alg: str, payload: bytes, private_key: bytes) -> bytes:
     """
-    Real liboqs signing. Raises PQCBackendError if oqs is missing.
-
-    private_key: liboqs secret key bytes for the chosen algorithm.
+    Real liboqs signing. Raises PQCBackendError if oqs is missing/misconfigured.
     """
     oqs_alg = _oqs_alg_for(qid_alg)
     oqs = _import_oqs()
@@ -101,8 +118,8 @@ def liboqs_verify(qid_alg: str, payload: bytes, signature: bytes, public_key: by
     """
     Real liboqs verify.
 
-    This raises PQCBackendError when oqs is missing (tests expect this),
-    but callers should catch and fail-closed.
+    Raises PQCBackendError when oqs is missing/misconfigured.
+    Callers that need "never raise" should catch and fail-closed.
     """
     oqs_alg = _oqs_alg_for(qid_alg)
     oqs = _import_oqs()
@@ -111,5 +128,4 @@ def liboqs_verify(qid_alg: str, payload: bytes, signature: bytes, public_key: by
         with oqs.Signature(oqs_alg) as verifier:
             return bool(verifier.verify(payload, signature, public_key))
     except Exception:
-        # Any internal error => verification false (but backend existed).
         return False
