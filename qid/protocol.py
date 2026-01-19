@@ -6,16 +6,86 @@ from typing import Any, Dict, Optional
 from qid.crypto import QIDKeyPair, sign_payload, verify_payload
 
 
+# ---------------------------------------------------------------------------
+# Payload builders (backward-compatible API used by tests + integrations)
+# ---------------------------------------------------------------------------
+
+def build_login_request_payload(
+    *,
+    service_id: str,
+    nonce: str,
+    callback: str | None = None,
+    version: int = 1,
+) -> Dict[str, Any]:
+    """
+    Build a deterministic login request payload.
+
+    This mirrors Digi-ID style flows but is Q-ID oriented.
+    """
+    p: Dict[str, Any] = {
+        "type": "login_request",
+        "v": version,
+        "service_id": service_id,
+        "nonce": nonce,
+    }
+    if callback is not None:
+        p["callback"] = callback
+    return p
+
+
+def build_login_response_payload(
+    *,
+    service_id: str,
+    nonce: str,
+    wallet_id: str,
+    approved: bool,
+    version: int = 1,
+) -> Dict[str, Any]:
+    """
+    Build a deterministic login response payload.
+    """
+    return {
+        "type": "login_response",
+        "v": version,
+        "service_id": service_id,
+        "nonce": nonce,
+        "wallet_id": wallet_id,
+        "approved": bool(approved),
+    }
+
+
+def build_registration_payload(
+    *,
+    service_id: str,
+    wallet_id: str,
+    public_key: str,
+    version: int = 1,
+) -> Dict[str, Any]:
+    """
+    Build a deterministic registration payload.
+    """
+    return {
+        "type": "registration",
+        "v": version,
+        "service_id": service_id,
+        "wallet_id": wallet_id,
+        "public_key": public_key,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Signed message wrapper (new API)
+# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True)
 class SignedMessage:
     """
     Signed protocol message.
 
-    Fields are intentionally minimal and deterministic:
-    - payload: canonical-json-signable dict (caller responsibility to keep it JSON-safe)
-    - signature: crypto envelope v1 (base64(canonical_json))
-    - algorithm: protocol-visible algorithm ID (mirrors keypair.algorithm)
-    - hybrid_container_b64: optional; required only for HYBRID real-backend verification/signing
+    - payload: JSON-safe dict
+    - signature: crypto envelope v1 (base64(canonical_json(envelope)))
+    - algorithm: keypair.algorithm as protocol-visible string
+    - hybrid_container_b64: optional; required only for HYBRID real-backend usage
     """
     payload: Dict[str, Any]
     signature: str
@@ -30,11 +100,10 @@ def sign_message(
     hybrid_container_b64: Optional[str] = None,
 ) -> SignedMessage:
     """
-    Sign a payload and return a SignedMessage wrapper.
+    Sign payload and return a SignedMessage.
 
-    Fail-closed rule:
-    - If the crypto layer requires hybrid_container_b64 (real backend + HYBRID),
-      it must be provided by the caller.
+    Fail-closed:
+    - If crypto layer requires hybrid_container_b64, caller must supply it.
     """
     sig = sign_payload(payload, keypair, hybrid_container_b64=hybrid_container_b64)
     return SignedMessage(
@@ -47,10 +116,10 @@ def sign_message(
 
 def verify_message(msg: SignedMessage, keypair: QIDKeyPair) -> bool:
     """
-    Verify a SignedMessage using the provided keypair.
+    Verify a SignedMessage.
 
-    Fail-closed rule:
-    - If a hybrid container is required, verification will be False unless present.
+    Fail-closed:
+    - Any mismatch or missing required container -> False.
     """
     return verify_payload(
         msg.payload,
