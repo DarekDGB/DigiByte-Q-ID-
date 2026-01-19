@@ -9,6 +9,8 @@ Key contract goals (authoritative):
 - Signature format is an explicit envelope (v1), fail-closed.
 - No silent fallback or downgrade.
 - Hybrid signatures are strict AND: both ML-DSA and Falcon must verify.
+- If a real PQC backend is explicitly selected, we MUST fail closed unless
+  real PQC signing/verification is actually wired (no stub fallback).
 
 This reference implementation uses HMAC-based stubs so it runs everywhere
 (GitHub Actions + iPhone-only workflow). Real PQC backends can replace
@@ -117,6 +119,22 @@ def _normalize_alg(alg: str) -> str:
     if alg == _LEGACY_HYBRID_ALGO:
         return HYBRID_ALGO
     return alg
+
+
+def _enforce_no_silent_fallback(alg: str) -> None:
+    """
+    Guardrail: if user explicitly selects a real PQC backend, do NOT allow
+    stub signing/verifying for PQC algorithms.
+    """
+    # Import locally to avoid importing optional modules unless needed.
+    try:
+        from qid.pqc_backends import enforce_no_silent_fallback_for_alg
+    except Exception:
+        # If pqc_backends module isn't present, we can't enforce selection logic.
+        # That is OK in early stages; once pqc_backends.py exists, it will enforce.
+        return
+
+    enforce_no_silent_fallback_for_alg(alg)
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +257,9 @@ def sign_payload(payload: Dict[str, Any], keypair: QIDKeyPair) -> str:
     if alg not in _ALLOWED_ALGOS:
         raise ValueError(f"Unknown Q-ID algorithm: {keypair.algorithm!r}")
 
+    # Guardrail: explicit real backend selection must fail closed until wired.
+    _enforce_no_silent_fallback(alg)
+
     msg = _canonical_json(payload)
     secret = _b64decode(keypair.secret_key)
 
@@ -295,6 +316,9 @@ def verify_payload(payload: Dict[str, Any], signature: str, keypair: QIDKeyPair)
 
     if env_alg not in _ALLOWED_ALGOS:
         return False
+
+    # Guardrail: explicit real backend selection must fail closed until wired.
+    _enforce_no_silent_fallback(env_alg)
 
     msg = _canonical_json(payload)
     secret = _b64decode(keypair.secret_key)
