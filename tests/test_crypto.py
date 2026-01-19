@@ -50,3 +50,17 @@ def test_pqc_falcon_backend_roundtrip():
 
 def test_hybrid_backend_roundtrip():
     _roundtrip_for_algorithm(HYBRID_ALGO)
+
+import os
+import pytest
+
+from qid.crypto import ML_DSA_ALGO, generate_keypair, sign_payload
+from qid.pqc_backends import PQCBackendError
+
+
+def test_crypto_blocks_pqc_when_backend_selected() -> None:
+    os.environ["QID_PQC_BACKEND"] = "liboqs"
+    kp = generate_keypair(ML_DSA_ALGO)
+    with pytest.raises(PQCBackendError):
+        sign_payload({"x": 1}, kp)
+    os.environ.pop("QID_PQC_BACKEND", None)
