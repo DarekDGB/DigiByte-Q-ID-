@@ -1,16 +1,17 @@
 """
 Optional PQC backend wiring for DigiByte Q-ID.
 
-This module is intentionally:
+Design goals:
 - import-safe (does not require liboqs-python unless selected)
 - fail-closed (no silent fallback)
-- minimal scaffolding (real wiring comes next)
+- CI-safe by default (stub backend remains default)
+- real signing/verifying available when QID_PQC_BACKEND=liboqs
 
-Backend selection is controlled by env var:
+Backend selection:
   QID_PQC_BACKEND=liboqs
 
-If not set, Q-ID continues using the deterministic stub signing in qid.crypto
-(so CI remains green).
+Author: DarekDGB
+License: MIT (see repo LICENSE.md)
 """
 
 from __future__ import annotations
@@ -26,6 +27,14 @@ class PQCBackendError(RuntimeError):
     """Raised when a real PQC backend is required but unavailable."""
 
 
+# OQS algorithm names (liboqs identifiers)
+# ML-DSA-44 and Falcon-512 are defined by liboqs.  [oai_citation:4‡GitHub](https://github.com/open-quantum-safe/liboqs/blob/master/src/sig/sig.h?utm_source=chatgpt.com)
+_OQS_ALG_BY_QID = {
+    ML_DSA_ALGO: "ML-DSA-44",
+    FALCON_ALGO: "Falcon-512",
+}
+
+
 def selected_backend() -> Optional[str]:
     v = os.getenv("QID_PQC_BACKEND", "").strip().lower()
     return v or None
@@ -36,8 +45,10 @@ def require_real_pqc() -> bool:
 
 
 def _import_oqs():
-    # liboqs-python exposes the module name `oqs` in many installations.
-    # If it isn't available, we fail closed when the backend is selected.
+    """
+    Import oqs (from liboqs-python) lazily.
+    If unavailable and backend selected, fail closed.
+    """
     try:
         import oqs  # type: ignore
     except Exception as e:  # pragma: no cover
@@ -54,38 +65,72 @@ class PQCSignatureResult:
     signature: bytes
 
 
-def liboqs_sign(alg: str, payload: bytes, private_key: bytes) -> bytes:
+def _oqs_alg_for(qid_alg: str) -> str:
+    if qid_alg not in (ML_DSA_ALGO, FALCON_ALGO):
+        raise ValueError(f"Unsupported PQC alg: {qid_alg}")
+    return _OQS_ALG_BY_QID[qid_alg]
+
+
+def liboqs_generate_keypair(qid_alg: str) -> tuple[bytes, bytes]:
     """
-    Placeholder surface for real liboqs signing.
-
-    We don't implement the signing logic here yet — this is scaffolding.
-    Next step will define key formats + actual oqs.Signature(...) usage.
+    Returns (public_key_bytes, secret_key_bytes) for the given Q-ID PQC algorithm.
     """
-    if alg not in {ML_DSA_ALGO, FALCON_ALGO}:
-        raise ValueError(f"Unsupported PQC alg: {alg}")
+    oqs = _import_oqs()
+    oqs_alg = _oqs_alg_for(qid_alg)
 
-    _ = _import_oqs()
-    raise PQCBackendError(
-        "liboqs backend selected but real signing is not wired yet "
-        "(scaffolding step complete; wiring step next)."
-    )
+    try:
+        with oqs.Signature(oqs_alg) as signer:
+            pub = signer.generate_keypair()
+            sec = signer.export_secret_key()
+            return pub, sec
+    except Exception as e:
+        raise PQCBackendError(f"liboqs keygen failed for {oqs_alg!r}") from e
 
 
-def liboqs_verify(alg: str, payload: bytes, signature: bytes, public_key: bytes) -> bool:
-    if alg not in {ML_DSA_ALGO, FALCON_ALGO}:
-        raise ValueError(f"Unsupported PQC alg: {alg}")
+def liboqs_sign(qid_alg: str, payload: bytes, private_key: bytes) -> bytes:
+    """
+    Real liboqs signing.
 
-    _ = _import_oqs()
-    raise PQCBackendError(
-        "liboqs backend selected but real verification is not wired yet "
-        "(scaffolding step complete; wiring step next)."
-    )
+    private_key must be the liboqs secret key bytes for the chosen oqs algorithm.
+    """
+    oqs = _import_oqs()
+    oqs_alg = _oqs_alg_for(qid_alg)
+
+    try:
+        # Many liboqs-python builds support constructing Signature with a secret key.
+        with oqs.Signature(oqs_alg, private_key) as signer:
+            return signer.sign(payload)
+    except TypeError:
+        # Fail closed if the wrapper API differs on this platform.
+        raise PQCBackendError(
+            f"liboqs-python Signature({oqs_alg!r}, private_key) not supported on this platform"
+        )
+    except Exception as e:
+        raise PQCBackendError(f"liboqs sign failed for {oqs_alg!r}") from e
+
+
+def liboqs_verify(qid_alg: str, payload: bytes, signature: bytes, public_key: bytes) -> bool:
+    """
+    Real liboqs verification.
+
+    Verification is boolean; any exception must fail-closed (False).
+    """
+    try:
+        oqs = _import_oqs()
+        oqs_alg = _oqs_alg_for(qid_alg)
+        with oqs.Signature(oqs_alg) as verifier:
+            return bool(verifier.verify(payload, signature, public_key))
+    except Exception:
+        return False
 
 
 def enforce_no_silent_fallback_for_alg(alg: str) -> None:
     """
     Guardrail: if user explicitly selects a real PQC backend, we must not
-    proceed with stubs for PQC algorithms.
+    proceed with stub signing/verifying for PQC algorithms.
+
+    After wiring is present, this function validates backend selection only.
+    Real usage is enforced by qid.crypto routing to liboqs paths when selected.
     """
     backend = selected_backend()
     if backend is None:
@@ -94,11 +139,6 @@ def enforce_no_silent_fallback_for_alg(alg: str) -> None:
     if backend != "liboqs":
         raise PQCBackendError(f"Unknown QID_PQC_BACKEND: {backend!r}")
 
-    # Only enforce for PQC algorithms; DEV remains dev-only.
+    # Only relevant for PQC algs; DEV remains dev-only.
     if alg in {ML_DSA_ALGO, FALCON_ALGO, HYBRID_ALGO}:
-        # backend is selected, therefore "real PQC required"
-        # wiring happens in the next step; for now, fail closed.
-        raise PQCBackendError(
-            f"Real PQC backend selected ({backend}) for alg={alg}, "
-            "but real PQC wiring is not enabled yet."
-        )
+        return
