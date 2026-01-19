@@ -5,7 +5,9 @@ Guardrails:
 - CI-safe by default: repo runs without oqs/liboqs installed.
 - No silent fallback: if QID_PQC_BACKEND is selected for PQC algorithms,
   signing MUST fail-closed when backend isn't available.
-- Verification MUST be fail-closed (return False to caller where appropriate).
+- Verification may be used in two modes:
+  - "raise" mode (this module): raise PQCBackendError if backend is missing/invalid
+  - "fail-closed boolean" mode (caller): catch PQCBackendError and return False
 
 Author: DarekDGB
 License: MIT (see repo LICENSE)
@@ -52,15 +54,12 @@ def _oqs_alg_for(qid_alg: str) -> str:
     return _OQS_ALG_BY_QID[qid_alg]
 
 
-def _import_oqs():
-    """
-    Import oqs (liboqs-python) lazily.
+def _validate_oqs_module(oqs: object) -> None:
+    if not hasattr(oqs, "Signature"):
+        raise PQCBackendError("Imported 'oqs' but it does not expose oqs.Signature (invalid backend)")
 
-    Fail-closed:
-    - If missing -> PQCBackendError
-    - If import succeeds but module is not a usable oqs module -> PQCBackendError
-      (important for tests that monkeypatch _import_oqs to return object()).
-    """
+
+def _import_oqs():
     try:
         import oqs  # type: ignore
     except Exception as e:  # pragma: no cover
@@ -69,10 +68,7 @@ def _import_oqs():
             'Install optional deps: pip install -e ".[dev,pqc]"'
         ) from e
 
-    # Ensure it looks like the expected liboqs-python module
-    if not hasattr(oqs, "Signature"):
-        raise PQCBackendError("Imported 'oqs' but it does not expose oqs.Signature (invalid backend)")
-
+    _validate_oqs_module(oqs)
     return oqs
 
 
@@ -118,11 +114,18 @@ def liboqs_verify(qid_alg: str, payload: bytes, signature: bytes, public_key: by
     """
     Real liboqs verify.
 
-    Raises PQCBackendError when oqs is missing/misconfigured.
-    Callers that need "never raise" should catch and fail-closed.
+    Contract for this function:
+    - If backend is missing/invalid => raise PQCBackendError (no silent fallback).
+    - If backend exists but verify fails => return False.
+
+    Callers that want "never raise" must catch PQCBackendError.
     """
     oqs_alg = _oqs_alg_for(qid_alg)
     oqs = _import_oqs()
+
+    # In tests, _import_oqs may be monkeypatched to return object().
+    # We must fail-closed loudly in that case.
+    _validate_oqs_module(oqs)
 
     try:
         with oqs.Signature(oqs_alg) as verifier:
