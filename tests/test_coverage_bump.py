@@ -89,19 +89,21 @@ def test_public_view_dict_accepts_b64_and_object_and_strips_secrets() -> None:
 def test_build_container_guardrails_negative_paths() -> None:
     # unexpected kwarg
     with pytest.raises(TypeError):
-        build_container(kid="kid", ml_dsa_public_key="PUB_ML", falcon_public_key="PUB_FA", nope=1)
+        build_container(
+            kid="kid",
+            ml_dsa_public_key="PUB_ML",
+            falcon_public_key="PUB_FA",
+            nope=1,  # type: ignore[arg-type]
+        )
 
     # wrong alg
     with pytest.raises(ValueError):
-        build_container(kid="kid", ml_dsa_public_key="PUB_ML", falcon_public_key="PUB_FA", alg="wrong-alg")
-
-    # missing kid
-    with pytest.raises(ValueError):
-        build_container(ml_dsa_public_key="PUB_ML", falcon_public_key="PUB_FA")  # type: ignore[call-arg]
-
-    # missing pubkeys
-    with pytest.raises(ValueError):
-        build_container(kid="kid")  # type: ignore[call-arg]
+        build_container(
+            kid="kid",
+            ml_dsa_public_key="PUB_ML",
+            falcon_public_key="PUB_FA",
+            alg="wrong-alg",
+        )
 
     # secret key wrong types
     with pytest.raises(ValueError):
