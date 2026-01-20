@@ -9,6 +9,7 @@ Must be:
 - Deterministic (canonical JSON)
 - Strictly validated
 - Fail-closed on decode
+- Provide stable container hash for binding / auditing
 
 Author: DarekDGB
 License: MIT (see repo LICENSE)
@@ -17,6 +18,7 @@ License: MIT (see repo LICENSE)
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -67,7 +69,7 @@ def build_container(
     falcon_pub: str,
     ml_dsa_secret_key: Optional[str] = None,
     falcon_secret_key: Optional[str] = None,
-    # Back-compat parameter names (used by older drafts / optional tests)
+    # Back-compat parameter names
     ml_dsa_public_key: Optional[str] = None,
     falcon_public_key: Optional[str] = None,
     ml_dsa_secret: Optional[str] = None,
@@ -79,7 +81,7 @@ def build_container(
     Tests expect keyword args:
       build_container(alg=..., ml_dsa_pub=..., falcon_pub=...)
 
-    We also accept back-compat names for future-proofing.
+    We also accept back-compat names.
     """
     if ml_dsa_public_key is not None:
         ml_dsa_pub = ml_dsa_public_key
@@ -126,46 +128,80 @@ def encode_container(c: HybridKeyContainer) -> str:
 
 
 def try_decode_container(b64: str) -> Optional[HybridKeyContainer]:
+    """Fail-closed decode: returns None on any error/invalid structure."""
+    try:
+        return decode_container(b64)
+    except Exception:
+        return None
+
+
+def decode_container(b64: str) -> HybridKeyContainer:
+    """
+    Strict decode: returns a HybridKeyContainer or raises ValueError.
+
+    Tests expect this function.
+    """
     try:
         raw = _b64decode(b64)
         obj = json.loads(raw.decode("utf-8"))
-        if not isinstance(obj, dict):
-            return None
+    except Exception as e:
+        raise ValueError("Invalid hybrid container encoding") from e
 
-        if obj.get("v") != 1:
-            return None
-        if obj.get("alg") != HYBRID_ALGO:
-            return None
+    if not isinstance(obj, dict):
+        raise ValueError("Hybrid container must be a JSON object")
 
-        kid = obj.get("kid")
-        if not isinstance(kid, str) or not kid:
-            return None
+    if obj.get("v") != 1:
+        raise ValueError("Unsupported hybrid container version")
+    if obj.get("alg") != HYBRID_ALGO:
+        raise ValueError("Hybrid container alg mismatch")
 
-        ml = obj.get("ml_dsa")
-        fa = obj.get("falcon")
-        if not isinstance(ml, dict) or not isinstance(fa, dict):
-            return None
+    kid = obj.get("kid")
+    if not isinstance(kid, str) or not kid:
+        raise ValueError("Hybrid container kid must be non-empty string")
 
-        ml_pub = ml.get("public_key")
-        fa_pub = fa.get("public_key")
-        if not isinstance(ml_pub, str) or not _is_b64(ml_pub):
-            return None
-        if not isinstance(fa_pub, str) or not _is_b64(fa_pub):
-            return None
+    ml = obj.get("ml_dsa")
+    fa = obj.get("falcon")
+    if not isinstance(ml, dict) or not isinstance(fa, dict):
+        raise ValueError("Hybrid container components must be objects")
 
-        ml_sec = ml.get("secret_key")
-        fa_sec = fa.get("secret_key")
-        if ml_sec is not None and (not isinstance(ml_sec, str) or not _is_b64(ml_sec)):
-            return None
-        if fa_sec is not None and (not isinstance(fa_sec, str) or not _is_b64(fa_sec)):
-            return None
+    ml_pub = ml.get("public_key")
+    fa_pub = fa.get("public_key")
+    if not isinstance(ml_pub, str) or not _is_b64(ml_pub):
+        raise ValueError("Hybrid container ml_dsa public_key invalid")
+    if not isinstance(fa_pub, str) or not _is_b64(fa_pub):
+        raise ValueError("Hybrid container falcon public_key invalid")
 
-        return HybridKeyContainer(
-            v=1,
-            alg=HYBRID_ALGO,
-            kid=kid,
-            ml_dsa=HybridComponent(public_key=ml_pub, secret_key=ml_sec),
-            falcon=HybridComponent(public_key=fa_pub, secret_key=fa_sec),
-        )
-    except Exception:
-        return None
+    ml_sec = ml.get("secret_key")
+    fa_sec = fa.get("secret_key")
+    if ml_sec is not None and (not isinstance(ml_sec, str) or not _is_b64(ml_sec)):
+        raise ValueError("Hybrid container ml_dsa secret_key invalid")
+    if fa_sec is not None and (not isinstance(fa_sec, str) or not _is_b64(fa_sec)):
+        raise ValueError("Hybrid container falcon secret_key invalid")
+
+    return HybridKeyContainer(
+        v=1,
+        alg=HYBRID_ALGO,
+        kid=kid,
+        ml_dsa=HybridComponent(public_key=ml_pub, secret_key=ml_sec),
+        falcon=HybridComponent(public_key=fa_pub, secret_key=fa_sec),
+    )
+
+
+def compute_container_hash(b64: str) -> str:
+    """
+    Compute a stable SHA-256 hash over the container's canonical JSON bytes.
+
+    Tests expect this function.
+    Returns hex string.
+    """
+    # Strict decode to guarantee we hash only valid containers.
+    c = decode_container(b64)
+    d = {
+        "v": c.v,
+        "alg": c.alg,
+        "kid": c.kid,
+        "ml_dsa": {"public_key": c.ml_dsa.public_key, "secret_key": c.ml_dsa.secret_key},
+        "falcon": {"public_key": c.falcon.public_key, "secret_key": c.falcon.secret_key},
+    }
+    h = hashlib.sha256(_canonical_json(d)).hexdigest()
+    return h
