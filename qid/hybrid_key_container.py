@@ -207,3 +207,20 @@ def compute_container_hash(b64: str) -> str:
         "falcon": {"public_key": c.falcon.public_key, "secret_key": c.falcon.secret_key},
     }
     return hashlib.sha256(_canonical_json(d)).hexdigest()
+
+def public_view_dict(container: HybridKeyContainer) -> dict:
+    """
+    Return a public-only dict view of the hybrid container.
+    Secret key material is excluded.
+    """
+    return {
+        "v": container.v,
+        "alg": container.alg,
+        "ml_dsa": {
+            "public_key": container.ml_dsa.public_key,
+        },
+        "falcon": {
+            "public_key": container.falcon.public_key,
+        },
+        "container_hash": compute_container_hash(container),
+    }
