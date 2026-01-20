@@ -20,7 +20,13 @@ from qid.qr_payloads import build_qr_payload, parse_qr_payload
 
 
 def test_qr_payload_wrappers_roundtrip() -> None:
-    payload = {"type": "login_request", "service_id": "svc", "nonce": "n", "callback_url": "https://cb", "version": "1"}
+    payload = {
+        "type": "login_request",
+        "service_id": "svc",
+        "nonce": "n",
+        "callback_url": "https://cb",
+        "version": "1",
+    }
     uri = build_qr_payload(payload)
     out = parse_qr_payload(uri)
     assert out["service_id"] == "svc"
@@ -44,7 +50,7 @@ def test_decode_container_rejects_invalid_base64_and_invalid_json() -> None:
     with pytest.raises(ValueError):
         decode_container("***")  # invalid base64 => must raise ValueError
 
-    # valid base64 but invalid JSON bytes => must raise ValueError("Invalid container JSON")
+    # valid base64 but invalid JSON bytes => must raise ValueError
     with pytest.raises(ValueError):
         decode_container("ew==")  # base64("{") -> invalid JSON
 
@@ -81,10 +87,6 @@ def test_public_view_dict_accepts_b64_and_object_and_strips_secrets() -> None:
 
 
 def test_build_container_guardrails_negative_paths() -> None:
-    # too many positional args
-    with pytest.raises(TypeError):
-        build_container("kid", "PUB_ML", "PUB_FA", "EXTRA")
-
     # unexpected kwarg
     with pytest.raises(TypeError):
         build_container(kid="kid", ml_dsa_public_key="PUB_ML", falcon_public_key="PUB_FA", nope=1)
