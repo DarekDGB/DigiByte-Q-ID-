@@ -1,7 +1,12 @@
+"""
+MIT License
+Copyright (c) 2025 DarekDGB
+"""
+
+from __future__ import annotations
+
 import pytest
 
-from qid.anchors import describe_anchor_placeholder
-from qid.integration.guardian import guardian_integration_todo
 from qid.crypto import (
     DEV_ALGO,
     HYBRID_ALGO,
@@ -16,8 +21,6 @@ from qid.protocol import (
     build_registration_uri,
     parse_registration_uri,
     server_verify_login_response,
-    register_identity,
-    login,
 )
 from qid.integration.adamantine import (
     QIDServiceConfig,
@@ -25,21 +28,15 @@ from qid.integration.adamantine import (
     prepare_signed_login_response,
     verify_signed_login_response_server,
 )
+from qid.integration.guardian import (
+    GuardianIntegrationNotImplemented,
+    require_guardian_integration,
+)
 
 
-def test_anchors_placeholder() -> None:
-    assert describe_anchor_placeholder() == {"anchor": "todo"}
-
-
-def test_guardian_placeholder() -> None:
-    msg = guardian_integration_todo()
-    assert isinstance(msg, str)
-    assert "not implemented" in msg.lower()
-
-
-def test_protocol_placeholders_return_todo() -> None:
-    assert register_identity({"x": 1})["status"] == "todo"
-    assert login({"x": 1})["status"] == "todo"
+def test_guardian_integration_is_fail_closed_until_implemented() -> None:
+    with pytest.raises(GuardianIntegrationNotImplemented):
+        require_guardian_integration()
 
 
 def test_build_login_response_rejects_missing_fields() -> None:
@@ -87,6 +84,17 @@ def test_registration_parse_rejects_missing_d_or_bad_payload() -> None:
     uri = "qid://register?d=ImhlbGxvIg"
     with pytest.raises(ValueError):
         parse_registration_uri(uri)
+
+
+def test_registration_build_and_parse_roundtrip_minimal() -> None:
+    """
+    Keep a simple positive path for URI build/parse.
+    (This replaces old placeholder-style "register_identity/login" tests.)
+    """
+    payload = {"type": "registration_request", "service_id": "example.com", "nonce": "n"}
+    uri = build_registration_uri(payload)
+    parsed = parse_registration_uri(uri)
+    assert parsed == payload
 
 
 def test_adamantine_prepare_rejects_mismatched_service_id() -> None:
