@@ -1,3 +1,8 @@
+<!--
+MIT License
+Copyright (c) 2025 DarekDGB
+-->
+
 # Crypto Envelope v1 Contract
 
 Author: DarekDGB  
