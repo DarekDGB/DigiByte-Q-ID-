@@ -1,54 +1,55 @@
 """
-Hybrid Key Container for DigiByte Q-ID.
-
-Purpose:
-- Carry ML-DSA + Falcon public keys (and optionally secret keys) in a single
-  base64(JSON) container used by HYBRID signing/verification.
-
-Must be:
-- Deterministic (canonical JSON)
-- Strictly validated
-- Fail-closed on decode
-- Provide stable container hash for binding / auditing
-- Provide a public-only view (no secret leakage)
-
-Author: DarekDGB
-License: MIT (see repo LICENSE)
+MIT License
+Copyright (c) 2025 DarekDGB
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import base64
 import hashlib
 import json
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Mapping, Optional, Union, cast
 
-from .crypto import HYBRID_ALGO
-
-
-def _canonical_json(d: Dict[str, Any]) -> bytes:
-    return json.dumps(d, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+from .crypto import FALCON_ALGO, HYBRID_ALGO, ML_DSA_ALGO
 
 
-def _b64encode(b: bytes) -> str:
-    return base64.b64encode(b).decode("ascii")
+_CONTAINER_VERSION = 1
 
 
-def _b64decode(s: str) -> bytes:
-    return base64.b64decode(s.encode("ascii"))
+# -------------------------
+# helpers (deterministic)
+# -------------------------
 
 
-def _is_b64(s: str) -> bool:
-    try:
-        _b64decode(s)
-        return True
-    except Exception:
-        return False
+def _canonical_json(obj: Any) -> bytes:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _b64u_encode(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode("ascii").rstrip("=")
+
+
+def _b64u_decode(s: str) -> bytes:
+    # fail-closed: reject non-str / empty / bad padding
+    if not isinstance(s, str) or not s:
+        raise ValueError("Invalid base64url string")
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode((s + pad).encode("ascii"))
+
+
+def _is_non_empty_str(x: Any) -> bool:
+    return isinstance(x, str) and x.strip() != ""
+
+
+# -------------------------
+# datamodel
+# -------------------------
 
 
 @dataclass(frozen=True)
-class HybridComponent:
+class KeyComponent:
+    alg: str
     public_key: str
     secret_key: Optional[str] = None
 
@@ -58,169 +59,268 @@ class HybridKeyContainer:
     v: int
     alg: str
     kid: str
-    ml_dsa: HybridComponent
-    falcon: HybridComponent
+    ml_dsa: KeyComponent
+    falcon: KeyComponent
+    container_hash: str
 
 
-def build_container(
-    *,
-    alg: str = HYBRID_ALGO,
-    kid: str = "kid",
-    ml_dsa_pub: str,
-    falcon_pub: str,
-    ml_dsa_secret_key: Optional[str] = None,
-    falcon_secret_key: Optional[str] = None,
-    # Back-compat parameter names
-    ml_dsa_public_key: Optional[str] = None,
-    falcon_public_key: Optional[str] = None,
-    ml_dsa_secret: Optional[str] = None,
-    falcon_secret: Optional[str] = None,
-) -> HybridKeyContainer:
-    if ml_dsa_public_key is not None:
-        ml_dsa_pub = ml_dsa_public_key
-    if falcon_public_key is not None:
-        falcon_pub = falcon_public_key
-    if ml_dsa_secret is not None:
-        ml_dsa_secret_key = ml_dsa_secret
-    if falcon_secret is not None:
-        falcon_secret_key = falcon_secret
+# -------------------------
+# public view + hash
+# -------------------------
 
+
+def public_view_dict(obj: Union[HybridKeyContainer, Mapping[str, Any], str]) -> Dict[str, Any]:
+    """
+    Public-only view (NO secret keys).
+    Tests expect this helper to accept:
+      - HybridKeyContainer
+      - dict
+      - base64 container string
+    """
+    c: Union[HybridKeyContainer, Mapping[str, Any]]
+    if isinstance(obj, str):
+        c = to_dict(decode_container(obj))
+    else:
+        c = obj
+
+    if isinstance(c, HybridKeyContainer):
+        return {
+            "v": c.v,
+            "alg": c.alg,
+            "kid": c.kid,
+            "ml_dsa": {"alg": c.ml_dsa.alg, "public_key": c.ml_dsa.public_key},
+            "falcon": {"alg": c.falcon.alg, "public_key": c.falcon.public_key},
+        }
+
+    # mapping/dict path
+    d = cast(Mapping[str, Any], c)
+    ml = cast(Mapping[str, Any], d.get("ml_dsa") or {})
+    fa = cast(Mapping[str, Any], d.get("falcon") or {})
+    return {
+        "v": d.get("v"),
+        "alg": d.get("alg"),
+        "kid": d.get("kid"),
+        "ml_dsa": {"alg": ml.get("alg"), "public_key": ml.get("public_key")},
+        "falcon": {"alg": fa.get("alg"), "public_key": fa.get("public_key")},
+    }
+
+
+def compute_container_hash(obj: Union[HybridKeyContainer, Mapping[str, Any], str]) -> str:
+    """
+    container_hash = base64url( sha256( canonical_json(public_view) ) )
+    """
+    pv = public_view_dict(obj)
+    digest = hashlib.sha256(_canonical_json(pv)).digest()
+    return _b64u_encode(digest)
+
+
+# -------------------------
+# validation / conversion
+# -------------------------
+
+
+def _validate_container_dict(d: Mapping[str, Any]) -> None:
+    # v
+    v = d.get("v")
+    if v != _CONTAINER_VERSION:
+        raise ValueError("Invalid container version")
+
+    # alg
+    alg = d.get("alg")
     if alg != HYBRID_ALGO:
-        raise ValueError("Hybrid container alg must be pqc-hybrid-ml-dsa-falcon")
-    if not isinstance(kid, str) or not kid:
-        raise ValueError("kid must be non-empty string")
+        raise ValueError("Invalid container alg")
 
-    if not isinstance(ml_dsa_pub, str) or not _is_b64(ml_dsa_pub):
-        raise ValueError("ml_dsa_pub must be base64 string")
-    if not isinstance(falcon_pub, str) or not _is_b64(falcon_pub):
-        raise ValueError("falcon_pub must be base64 string")
+    # kid
+    kid = d.get("kid")
+    if not _is_non_empty_str(kid):
+        raise ValueError("Invalid kid")
 
-    if ml_dsa_secret_key is not None and (not isinstance(ml_dsa_secret_key, str) or not _is_b64(ml_dsa_secret_key)):
-        raise ValueError("ml_dsa_secret_key must be base64 string if provided")
-    if falcon_secret_key is not None and (not isinstance(falcon_secret_key, str) or not _is_b64(falcon_secret_key)):
-        raise ValueError("falcon_secret_key must be base64 string if provided")
+    # components
+    ml = d.get("ml_dsa")
+    fa = d.get("falcon")
+    if not isinstance(ml, Mapping) or not isinstance(fa, Mapping):
+        raise ValueError("Missing components")
+
+    if ml.get("alg") != ML_DSA_ALGO:
+        raise ValueError("ml_dsa.alg mismatch")
+    if fa.get("alg") != FALCON_ALGO:
+        raise ValueError("falcon.alg mismatch")
+
+    if not _is_non_empty_str(ml.get("public_key")):
+        raise ValueError("ml_dsa.public_key missing")
+    if not _is_non_empty_str(fa.get("public_key")):
+        raise ValueError("falcon.public_key missing")
+
+    # container_hash required and must match computed hash from PUBLIC VIEW ONLY
+    ch = d.get("container_hash")
+    if not _is_non_empty_str(ch):
+        raise ValueError("container_hash missing")
+
+    expected = compute_container_hash(d)
+    if ch != expected:
+        raise ValueError("container_hash mismatch")
+
+
+def from_dict(d: Mapping[str, Any]) -> HybridKeyContainer:
+    _validate_container_dict(d)
+
+    ml = cast(Mapping[str, Any], d["ml_dsa"])
+    fa = cast(Mapping[str, Any], d["falcon"])
+
+    # secret_key optional, but if present must be string
+    ml_sk = ml.get("secret_key")
+    fa_sk = fa.get("secret_key")
+    if ml_sk is not None and not isinstance(ml_sk, str):
+        raise ValueError("ml_dsa.secret_key wrong type")
+    if fa_sk is not None and not isinstance(fa_sk, str):
+        raise ValueError("falcon.secret_key wrong type")
 
     return HybridKeyContainer(
-        v=1,
-        alg=HYBRID_ALGO,
-        kid=kid,
-        ml_dsa=HybridComponent(public_key=ml_dsa_pub, secret_key=ml_dsa_secret_key),
-        falcon=HybridComponent(public_key=falcon_pub, secret_key=falcon_secret_key),
+        v=int(d["v"]),
+        alg=str(d["alg"]),
+        kid=str(d["kid"]),
+        ml_dsa=KeyComponent(alg=str(ml["alg"]), public_key=str(ml["public_key"]), secret_key=cast(Optional[str], ml_sk)),
+        falcon=KeyComponent(alg=str(fa["alg"]), public_key=str(fa["public_key"]), secret_key=cast(Optional[str], fa_sk)),
+        container_hash=str(d["container_hash"]),
     )
 
 
-def encode_container(c: HybridKeyContainer) -> str:
-    d = {
+def to_dict(c: HybridKeyContainer) -> Dict[str, Any]:
+    d: Dict[str, Any] = {
         "v": c.v,
         "alg": c.alg,
         "kid": c.kid,
-        "ml_dsa": {"public_key": c.ml_dsa.public_key, "secret_key": c.ml_dsa.secret_key},
-        "falcon": {"public_key": c.falcon.public_key, "secret_key": c.falcon.secret_key},
+        "ml_dsa": {"alg": c.ml_dsa.alg, "public_key": c.ml_dsa.public_key},
+        "falcon": {"alg": c.falcon.alg, "public_key": c.falcon.public_key},
+        "container_hash": c.container_hash,
     }
-    return _b64encode(_canonical_json(d))
+    if c.ml_dsa.secret_key is not None:
+        d["ml_dsa"]["secret_key"] = c.ml_dsa.secret_key
+    if c.falcon.secret_key is not None:
+        d["falcon"]["secret_key"] = c.falcon.secret_key
+    return d
 
 
-def try_decode_container(b64: str) -> Optional[HybridKeyContainer]:
+# -------------------------
+# encode/decode
+# -------------------------
+
+
+def encode_container(container: Union[HybridKeyContainer, Mapping[str, Any]]) -> str:
+    """
+    Encode container dict/object as base64url(canonical_json(container_dict)).
+    Must validate and enforce correct container_hash.
+    """
+    if isinstance(container, HybridKeyContainer):
+        d = to_dict(container)
+    else:
+        d = dict(container)
+
+    # validate AND enforce hash matches public view
+    _validate_container_dict(d)
+
+    return _b64u_encode(_canonical_json(d))
+
+
+def decode_container(b64: str) -> HybridKeyContainer:
+    """
+    Decode base64url JSON container and validate strictly.
+    """
+    raw = _b64u_decode(b64)
     try:
-        return decode_container(b64)
+        obj = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise ValueError("Invalid container JSON") from e
+
+    if not isinstance(obj, dict):
+        raise ValueError("Container JSON must be an object")
+
+    return from_dict(cast(Mapping[str, Any], obj))
+
+
+def try_decode_container(x: Union[str, HybridKeyContainer, Mapping[str, Any]]) -> Optional[HybridKeyContainer]:
+    """
+    Fail-closed helper:
+      - returns HybridKeyContainer on success
+      - returns None on any error
+    Accepts base64 string OR object OR dict.
+    """
+    try:
+        if isinstance(x, HybridKeyContainer):
+            # validate via encode/decode invariants
+            _validate_container_dict(to_dict(x))
+            return x
+        if isinstance(x, Mapping):
+            return from_dict(x)
+        return decode_container(x)
     except Exception:
         return None
 
 
-def decode_container(b64: str) -> HybridKeyContainer:
-    try:
-        raw = _b64decode(b64)
-        obj = json.loads(raw.decode("utf-8"))
-    except Exception as e:
-        raise ValueError("Invalid hybrid container encoding") from e
-
-    if not isinstance(obj, dict):
-        raise ValueError("Hybrid container must be a JSON object")
-
-    if obj.get("v") != 1:
-        raise ValueError("Unsupported hybrid container version")
-    if obj.get("alg") != HYBRID_ALGO:
-        raise ValueError("Hybrid container alg mismatch")
-
-    kid = obj.get("kid")
-    if not isinstance(kid, str) or not kid:
-        raise ValueError("Hybrid container kid must be non-empty string")
-
-    ml = obj.get("ml_dsa")
-    fa = obj.get("falcon")
-    if not isinstance(ml, dict) or not isinstance(fa, dict):
-        raise ValueError("Hybrid container components must be objects")
-
-    ml_pub = ml.get("public_key")
-    fa_pub = fa.get("public_key")
-    if not isinstance(ml_pub, str) or not _is_b64(ml_pub):
-        raise ValueError("Hybrid container ml_dsa public_key invalid")
-    if not isinstance(fa_pub, str) or not _is_b64(fa_pub):
-        raise ValueError("Hybrid container falcon public_key invalid")
-
-    ml_sec = ml.get("secret_key")
-    fa_sec = fa.get("secret_key")
-    if ml_sec is not None and (not isinstance(ml_sec, str) or not _is_b64(ml_sec)):
-        raise ValueError("Hybrid container ml_dsa secret_key invalid")
-    if fa_sec is not None and (not isinstance(fa_sec, str) or not _is_b64(fa_sec)):
-        raise ValueError("Hybrid container falcon secret_key invalid")
-
-    return HybridKeyContainer(
-        v=1,
-        alg=HYBRID_ALGO,
-        kid=kid,
-        ml_dsa=HybridComponent(public_key=ml_pub, secret_key=ml_sec),
-        falcon=HybridComponent(public_key=fa_pub, secret_key=fa_sec),
-    )
+# -------------------------
+# build_container (test-shaped)
+# -------------------------
 
 
-def public_view_dict(container: Union[str, HybridKeyContainer]) -> Dict[str, Any]:
+def build_container(*args: Any, **kwargs: Any) -> HybridKeyContainer:
     """
-    Return a public-only dict view of the container (NO secret keys).
+    Build container in the TWO styles tests use:
 
-    Tests expect this helper.
-    Accepts either:
-      - base64 container string
-      - HybridKeyContainer object
+    Style A (positional):
+      build_container(kid, ml_dsa_public_key, falcon_public_key, ml_dsa_secret_key=None, falcon_secret_key=None)
+
+    Style B (keyword alt names):
+      build_container(alg=HYBRID_ALGO, ml_dsa_pub=..., falcon_pub=..., kid="kid")
+
+    Also supports explicit keyword names:
+      kid=..., ml_dsa_public_key=..., falcon_public_key=...
     """
-    c = decode_container(container) if isinstance(container, str) else container
-    return {
-        "v": c.v,
-        "alg": c.alg,
-        "kid": c.kid,
-        "ml_dsa": {"public_key": c.ml_dsa.public_key},
-        "falcon": {"public_key": c.falcon.public_key},
+    # Style A positional
+    if args:
+        if len(args) not in (3, 4, 5):
+            raise TypeError("build_container(): expected 3-5 positional args")
+        kid = args[0]
+        ml_pub = args[1]
+        fa_pub = args[2]
+        ml_sk = args[3] if len(args) >= 4 else None
+        fa_sk = args[4] if len(args) >= 5 else None
+        alg = HYBRID_ALGO
+    else:
+        # Style B keywords
+        alg = kwargs.pop("alg", HYBRID_ALGO)
+        kid = kwargs.pop("kid", "kid")
+        # accept both naming conventions
+        ml_pub = kwargs.pop("ml_dsa_public_key", kwargs.pop("ml_dsa_pub", None))
+        fa_pub = kwargs.pop("falcon_public_key", kwargs.pop("falcon_pub", None))
+        ml_sk = kwargs.pop("ml_dsa_secret_key", None)
+        fa_sk = kwargs.pop("falcon_secret_key", None)
+
+        if kwargs:
+            raise TypeError(f"build_container(): unexpected kwargs: {sorted(kwargs.keys())!r}")
+
+    if alg != HYBRID_ALGO:
+        raise ValueError("build_container(): alg must be HYBRID_ALGO")
+    if not _is_non_empty_str(kid):
+        raise ValueError("build_container(): kid required")
+    if not _is_non_empty_str(ml_pub) or not _is_non_empty_str(fa_pub):
+        raise ValueError("build_container(): public keys required")
+
+    obj: Dict[str, Any] = {
+        "v": _CONTAINER_VERSION,
+        "alg": HYBRID_ALGO,
+        "kid": str(kid),
+        "ml_dsa": {"alg": ML_DSA_ALGO, "public_key": str(ml_pub)},
+        "falcon": {"alg": FALCON_ALGO, "public_key": str(fa_pub)},
     }
 
+    if ml_sk is not None:
+        if not isinstance(ml_sk, str):
+            raise ValueError("ml_dsa_secret_key wrong type")
+        obj["ml_dsa"]["secret_key"] = ml_sk
+    if fa_sk is not None:
+        if not isinstance(fa_sk, str):
+            raise ValueError("falcon_secret_key wrong type")
+        obj["falcon"]["secret_key"] = fa_sk
 
-def compute_container_hash(b64: str) -> str:
-    """
-    Compute stable SHA-256 hash over canonical JSON bytes of a VALID container.
-    Returns hex string.
-    """
-    c = decode_container(b64)
-    d = {
-        "v": c.v,
-        "alg": c.alg,
-        "kid": c.kid,
-        "ml_dsa": {"public_key": c.ml_dsa.public_key, "secret_key": c.ml_dsa.secret_key},
-        "falcon": {"public_key": c.falcon.public_key, "secret_key": c.falcon.secret_key},
-    }
-    return hashlib.sha256(_canonical_json(d)).hexdigest()
-
-def public_view_dict(container: HybridKeyContainer) -> dict:
-    """
-    Return a public-only dict view of the hybrid container.
-    Secret key material is excluded.
-    """
-    return {
-        "v": container.v,
-        "alg": container.alg,
-        "ml_dsa": {
-            "public_key": container.ml_dsa.public_key,
-        },
-        "falcon": {
-            "public_key": container.falcon.public_key,
-        },
-        "container_hash": compute_container_hash(container),
-    }
+    obj["container_hash"] = compute_container_hash(obj)
+    return from_dict(obj)
