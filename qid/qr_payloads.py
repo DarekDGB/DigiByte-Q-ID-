@@ -1,39 +1,44 @@
 """
 QR payload handling for DigiByte Q-ID.
 
-This module stays intentionally thin.
+This module is intentionally thin.
 
-Contract source of truth:
-- qid.uri_scheme (canonical qid:// encoding/decoding rules)
+All URI encoding/decoding rules live in:
+    qid/uri_scheme.py
 
-We keep these functions for compatibility with existing tests/callers:
-- encode_login_request(payload) -> "qid://login?d=..."
-- decode_login_request(uri) -> dict
+We keep these wrappers to preserve the earlier public API used by tests and
+integrations.
+
+Login URI format:
+    qid://login?d=<base64url(JSON)>
+
+Decoded JSON object (login request):
+{
+  "type": "login_request",
+  "service_id": "example.com",
+  "nonce": "random-unique-string",
+  "callback_url": "https://example.com/qid/callback",
+  "version": "1"
+}
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict
 
-from .uri_scheme import decode_login_request as _decode_login_request
-from .uri_scheme import encode_login_request as _encode_login_request
+from .uri_scheme import decode_login_request as decode_login_request
+from .uri_scheme import encode_login_request as encode_login_request
 
 
-def encode_login_request(payload: Dict[str, Any]) -> str:
+def encode_login_request_uri(payload: Dict[str, Any]) -> str:
     """
-    Convert a login-request dictionary into a Q-ID URI.
-
-    Expected output format (contract):
-        qid://login?d=<base64url(JSON)>
+    Backwards compatible wrapper (older code used *_uri suffix).
     """
-    # payload is validated at higher levels / by contract tests.
-    return _encode_login_request(payload)
+    return encode_login_request(payload)
 
 
-def decode_login_request(uri: str) -> Dict[str, Any]:
+def decode_login_request_uri(uri: str) -> Dict[str, Any]:
     """
-    Parse a Q-ID login URI back into a dictionary.
-
-    Raises ValueError if the URI is invalid or cannot be decoded.
+    Backwards compatible wrapper (older code used *_uri suffix).
     """
-    return _decode_login_request(uri)
+    return decode_login_request(uri)
