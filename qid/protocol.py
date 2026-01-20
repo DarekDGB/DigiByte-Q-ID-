@@ -1,11 +1,12 @@
 """
 High-level DigiByte Q-ID protocol helpers.
 
-This module provides helpers for:
+Provides helpers for:
 - login request payloads + qid:// login URIs
+- login responses + signing/verification flows
 - registration payloads + qid:// register URIs
-- signing/verification wrappers for protocol payloads
-- SignedMessage wrapper used by hybrid-container integration tests
+- SignedMessage wrapper used by tests
+- register_identity() convenience wrapper (expected by tests)
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ def _b64url_decode(token: str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# SignedMessage wrapper (used by hybrid container tests)
+# SignedMessage wrapper (used by tests)
 # ---------------------------------------------------------------------------
 
 
@@ -71,9 +72,7 @@ def sign_message(
 
 def verify_message(msg: SignedMessage, keypair: QIDKeyPair) -> bool:
     """
-    Verify a SignedMessage.
-
-    Fail-closed: any mismatch / missing required container returns False.
+    Verify a SignedMessage. Fail-closed on any mismatch.
     """
     return verify_payload(
         msg.payload,
@@ -94,9 +93,6 @@ def build_login_request_payload(
     callback_url: str,
     version: str = "1",
 ) -> Dict[str, Any]:
-    """
-    Build a minimal Q-ID login request payload.
-    """
     return {
         "type": "login_request",
         "service_id": service_id,
@@ -107,21 +103,15 @@ def build_login_request_payload(
 
 
 def build_login_request_uri(payload: Dict[str, Any]) -> str:
-    """
-    Convert a login payload into a qid:// URI using the QR encoder.
-    """
     return encode_login_request(payload)
 
 
 def parse_login_request_uri(uri: str) -> Dict[str, Any]:
-    """
-    Decode a qid://login URI back into a login payload dictionary.
-    """
     return decode_login_request(uri)
 
 
 # ---------------------------------------------------------------------------
-# Signed login response helpers
+# Login response helpers
 # ---------------------------------------------------------------------------
 
 
@@ -132,9 +122,6 @@ def build_login_response_payload(
     key_id: str | None = None,
     version: str = "1",
 ) -> Dict[str, Any]:
-    """
-    Build a Q-ID login response payload that a wallet would sign.
-    """
     service_id = request_payload.get("service_id")
     nonce = request_payload.get("nonce")
     if not service_id or not nonce:
@@ -154,16 +141,10 @@ def build_login_response_payload(
 
 
 def sign_login_response(payload: Dict[str, Any], keypair: QIDKeyPair) -> str:
-    """
-    Sign a login response payload.
-    """
     return sign_payload(payload, keypair)
 
 
 def verify_login_response(payload: Dict[str, Any], signature: str, keypair: QIDKeyPair) -> bool:
-    """
-    Verify a signed login response payload.
-    """
     return verify_payload(payload, signature, keypair)
 
 
@@ -173,9 +154,6 @@ def server_verify_login_response(
     signature: str,
     keypair: QIDKeyPair,
 ) -> bool:
-    """
-    Reference server-side verification flow for a signed login response.
-    """
     if response_payload.get("type") != "login_response":
         return False
     if response_payload.get("service_id") != request_payload.get("service_id"):
@@ -198,9 +176,6 @@ def build_registration_payload(
     callback_url: str,
     version: str = "1",
 ) -> Dict[str, Any]:
-    """
-    Build a Q-ID registration payload.
-    """
     return {
         "type": "registration",
         "service_id": service_id,
@@ -213,21 +188,12 @@ def build_registration_payload(
 
 
 def build_registration_uri(payload: Dict[str, Any]) -> str:
-    """
-    Encode a registration payload into a qid://register URI.
-
-    Format:
-        qid://register?d=<base64url(JSON)>
-    """
     json_str = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     token = _b64url_encode(json_str.encode("utf-8"))
     return f"qid://register?d={token}"
 
 
 def parse_registration_uri(uri: str) -> Dict[str, Any]:
-    """
-    Decode a qid://register?d=... URI back into a registration payload dict.
-    """
     prefix = "qid://"
     if not uri.startswith(prefix):
         raise ValueError("Not a Q-ID URI (missing 'qid://' prefix).")
@@ -261,3 +227,30 @@ def parse_registration_uri(uri: str) -> Dict[str, Any]:
         raise ValueError("Q-ID registration payload must be a JSON object.")
 
     return payload
+
+
+def register_identity(
+    service_id: str,
+    address: str,
+    pubkey: str,
+    nonce: str,
+    callback_url: str,
+    keypair: QIDKeyPair,
+    *,
+    version: str = "1",
+    hybrid_container_b64: Optional[str] = None,
+) -> SignedMessage:
+    """
+    Convenience wrapper expected by tests.
+
+    Builds a registration payload and signs it, returning a SignedMessage.
+    """
+    payload = build_registration_payload(
+        service_id=service_id,
+        address=address,
+        pubkey=pubkey,
+        nonce=nonce,
+        callback_url=callback_url,
+        version=version,
+    )
+    return sign_message(payload, keypair, hybrid_container_b64=hybrid_container_b64)
