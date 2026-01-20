@@ -1,208 +1,155 @@
-# DigiByte Q-ID — Adamantine Wallet Integration
+<!--
+MIT License
+Copyright (c) 2025 DarekDGB
+-->
 
-Status: **draft – reference integration sketch**
+# DigiByte Q-ID — Adamantine Wallet Integration (Non-Normative)
 
-This document describes how the DigiByte **Adamantine Wallet** can use
-the Q-ID library to:
+> **Status:** Developer guidance  
+> **Normative rules live in `docs/CONTRACTS/`.**  
+> If this document conflicts with a contract, **the contract wins**.
 
-1. Build Q-ID **login request URIs** for services.
-2. Create and sign **login responses** using the wallet's keys.
-3. Provide a simple server-side verification flow for integrators.
-
-The reference code lives in:
-
-- `qid/integration/adamantine.py`
-
-It is intentionally minimal and framework-agnostic so that mobile / web /
-desktop clients can reuse the same ideas.
+This document explains how **DigiByte Q-ID** integrates with **Adamantine Wallet OS**
+from a *protocol consumer* perspective. It does **not** define wallet security,
+key storage, or UI behavior.
 
 ---
 
-## 1. Concepts
+## 1. Scope and intent
 
-### 1.1 Service configuration
+Adamantine Wallet OS acts as a **Q-ID client**:
+- it parses `qid://` URIs
+- it signs Q-ID payloads
+- it returns signed responses to services
 
-Each relying party (website / app / service) that wants Q-ID login is
-represented by a simple configuration object:
+Q-ID deliberately does **not**:
+- mandate wallet UX
+- define key custody models
+- assume hardware or software isolation
+- replace wallet security architecture
 
-- `service_id` – stable identifier for the service
-  (e.g. `"example.com"`, `"com.exchange.app"`).
-- `callback_url` – HTTPS endpoint that receives Q-ID responses.
-
-In the reference module this is modeled as:
-
-```python
-@dataclass
-class QIDServiceConfig:
-    service_id: str
-    callback_url: str
-```
-
-Wallet code (Adamantine) can keep a list of known `QIDServiceConfig`
-entries (bookmarks, saved logins, etc.).
-
-### 1.2 Key management
-
-Adamantine is expected to manage one or more **Q-ID keypairs** in its
-secure storage (device keystore, hardware, etc.).
-
-For now, the integration uses the **dev backend**:
-
-- `qid.crypto.generate_dev_keypair()`
-- `qid.crypto.sign_payload(...)`
-
-Later, the same API can be backed by PQC / hybrid schemes without
-changing how the wallet calls it.
+Those decisions belong to Adamantine.
 
 ---
 
-## 2. Building a login request URI (wallet → service)
+## 2. Login integration
 
-When a user chooses "Login with DigiByte Q-ID" to a given service,
-Adamantine should:
+### 2.1 Receive login request
 
-1. Generate a **fresh nonce**.
-2. Use the service configuration (service_id, callback_url).
-3. Build a Q-ID login request payload.
-4. Encode it into a `qid://login?...` URI.
-5. Show it as a **QR code** or deep-link.
+The wallet:
+1. scans or receives a `qid://login` URI
+2. decodes the login request payload
+3. validates basic structure (type, service_id, nonce)
 
-Reference helper:
-
-```python
-from qid.integration.adamantine import build_qid_login_uri
-```
-
-Flow:
-
-```python
-uri = build_qid_login_uri(
-    service=config,
-    nonce="random-nonce",
-)
-```
-
-The `uri` can be:
-
-- Rendered as a QR code for a browser-based service, or
-- Used as an internal deep-link inside mobile flows.
+Helpers:
+- `decode_login_request_uri`
 
 ---
 
-## 3. Creating a signed login response (wallet side)
+### 2.2 Build login response
 
-After the service shows a Q-ID login request (QR or deep-link), the
-wallet:
+The wallet:
+1. constructs a login response payload
+2. signs it with the selected keypair
+3. returns the signed payload to the service
 
-1. **Parses** the login request URI.
-2. Validates that `service_id` and `callback_url` match expectations.
-3. Chooses the **DigiByte address** + **Q-ID keypair** to use.
-4. Builds a **login response payload** from the request.
-5. Signs the payload with `qid.crypto.sign_payload(...)`.
-6. Sends the response + signature to the service's callback URL.
+Helpers:
+- `build_login_response_payload`
+- `sign_message` (protocol helper)
 
-Reference helper:
-
-```python
-from qid.integration.adamantine import prepare_signed_login_response
-```
-
-Usage:
-
-```python
-response_payload, signature = prepare_signed_login_response(
-    service=config,
-    login_uri=uri_from_service,
-    address=selected_address,
-    keypair=wallet_keypair,
-    key_id="primary",  # optional
-)
-```
-
-The wallet then sends a POST to the callback URL, for example:
-
-```json
-{
-  "qid_version": "1",
-  "login_request_uri": "qid://login?d=...",
-  "response_payload": { ... },
-  "signature": "base64url-signature"
-}
-```
-
-The exact HTTP/JSON shape is up to the integrator; Q-ID only specifies
-the **cryptographic core**.
+Wallet responsibilities:
+- select the correct keypair
+- ensure user intent (outside Q-ID scope)
+- supply hybrid container if required
 
 ---
 
-## 4. Server-side verification (service / backend)
+## 3. Registration integration
 
-On the service side, developers can:
+Registration is a wallet-driven action.
 
-1. Receive the login request URI, response payload and signature.
-2. Decode the request.
-3. Run a **reference verification flow**.
+The wallet:
+1. constructs a registration payload
+2. signs it
+3. sends it to the service
 
-Reference helper:
+Helpers:
+- `build_registration_payload`
+- `sign_message`
 
-```python
-from qid.integration.adamantine import verify_signed_login_response_server
-```
-
-This internally uses:
-
-- `parse_login_request_uri(...)`
-- `server_verify_login_response(...)`
-- the chosen `QIDKeyPair` / backend.
-
-If verification succeeds, the service can:
-
-- Create / resume a user session.
-- Bind the Q-ID identity to an internal account.
-- Log the event for audit / anomaly detection.
+Q-ID does not dictate:
+- how registration is triggered
+- whether multiple keys are supported
+- how revocation is handled
 
 ---
 
-## 5. Guardian / Shield hooks (future)
+## 4. Cryptography modes
 
-Adamantine + Q-ID sit inside a larger defensive architecture
-(**Guardian**, **QWG**, **Sentinel**, **DQSN**, **ADN**, **Adaptive Core**).
+### Stub mode (default)
 
-Future integration ideas:
+- deterministic signing
+- no external PQC backend
+- suitable for development and CI
 
-- Every successful Q-ID login can emit a **signed event** that Guardian
-  consumes for:
-  - policy checks,
-  - anomaly detection,
-  - correlation with on-chain activity.
-- Repeated failed verifications from the same service / device can
-  trigger:
-  - risk scores,
-  - alerts,
-  - temporary lockouts.
+### Real PQC backend (`liboqs`)
 
-These hooks can be added around the helpers in
-`qid.integration.adamantine` without changing the core Q-ID protocol.
+When `QID_PQC_BACKEND=liboqs`:
+- PQC algorithms are enforced
+- hybrid requires `hybrid_container_b64`
+- no silent fallback is allowed
+
+Wallets must:
+- explicitly provide required containers
+- surface configuration errors to the user
 
 ---
 
-## 6. Summary
+## 5. Hybrid container handling
 
-The Adamantine integration layer aims to:
+For `pqc-hybrid-ml-dsa-falcon`:
+- the wallet owns container creation
+- the container binds ML-DSA + Falcon public keys
+- the container is passed alongside signing
 
-- Keep **wallet code simple** (build URI, sign response, verify).
-- Make **server integration predictable**, via a clear reference flow.
-- Stay compatible with future **PQC crypto backends** and with the
-  larger **DigiByte Quantum Shield** stack.
+Contract:
+- `docs/CONTRACTS/hybrid_key_container_v1.md`
 
-All complexity around keys, storage, PQC algorithms and policies can
-evolve behind the stable helpers exposed by:
+---
 
-```python
-qid.integration.adamantine
-qid.crypto
-qid.protocol
-```
+## 6. Fail-closed behavior
 
-This lets Q-ID grow from a dev prototype into a production-grade,
-quantum-aware authentication layer for the entire DigiByte ecosystem.
+Wallet integrations must treat:
+- signing errors
+- verification errors
+- backend misconfiguration
+
+as **hard failures**.
+
+Wallets may:
+- catch errors
+- present user-facing messages
+- retry only after explicit correction
+
+Wallets must **not**:
+- auto-downgrade algorithms
+- retry with weaker crypto
+- ignore missing containers
+
+---
+
+## 7. What this document is not
+
+This document does **not**:
+- define Adamantine Wallet OS architecture
+- describe secure key storage
+- define Guardian / policy integration
+- promise production readiness
+
+It exists to clarify **integration boundaries**.
+
+---
+
+## License
+
+MIT — Copyright (c) 2025 **DarekDGB**
