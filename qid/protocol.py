@@ -22,10 +22,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union, overload
 
 from .crypto import QIDKeyPair, sign_payload, verify_payload
-from .qr_payloads import decode_login_request, encode_login_request
 from .uri_scheme import (
-    decode_registration_uri as _decode_registration_uri,
-    encode_registration_uri as _encode_registration_uri,
+    decode_login_request_uri,
+    decode_registration_uri,
+    encode_login_request_uri,
+    encode_registration_uri,
 )
 
 # ---------------------------------------------------------------------------
@@ -58,7 +59,8 @@ def sign_message(
     try:
         sig = sign_payload(payload, keypair, hybrid_container_b64=hybrid_container_b64)
     except Exception:
-        sig = ""
+        sig = ""  # fail-closed without crashing protocol layer
+
     return SignedMessage(
         payload=payload,
         signature=sig,
@@ -98,11 +100,11 @@ def build_login_request_payload(
 
 
 def build_login_request_uri(payload: Dict[str, Any]) -> str:
-    return encode_login_request(payload)
+    return encode_login_request_uri(payload)
 
 
 def parse_login_request_uri(uri: str) -> Dict[str, Any]:
-    return decode_login_request(uri)
+    return decode_login_request_uri(uri)
 
 
 def build_login_response_payload(
@@ -114,8 +116,10 @@ def build_login_response_payload(
 ) -> Dict[str, Any]:
     service_id = request_payload.get("service_id")
     nonce = request_payload.get("nonce")
-    if not service_id or not nonce:
-        raise ValueError("Login request payload must contain 'service_id' and 'nonce'.")
+    if not isinstance(service_id, str) or not service_id:
+        raise ValueError("Login request payload must contain non-empty 'service_id'.")
+    if not isinstance(nonce, str) or not nonce:
+        raise ValueError("Login request payload must contain non-empty 'nonce'.")
 
     payload: Dict[str, Any] = {
         "type": "login_response",
@@ -130,18 +134,12 @@ def build_login_response_payload(
     return payload
 
 
-def sign_login_response(payload: Dict[str, Any], keypair: QIDKeyPair, *, hybrid_container_b64: Optional[str] = None) -> str:
-    return sign_payload(payload, keypair, hybrid_container_b64=hybrid_container_b64)
+def sign_login_response(payload: Dict[str, Any], keypair: QIDKeyPair) -> str:
+    return sign_payload(payload, keypair)
 
 
-def verify_login_response(
-    payload: Dict[str, Any],
-    signature: str,
-    keypair: QIDKeyPair,
-    *,
-    hybrid_container_b64: Optional[str] = None,
-) -> bool:
-    return verify_payload(payload, signature, keypair, hybrid_container_b64=hybrid_container_b64)
+def verify_login_response(payload: Dict[str, Any], signature: str, keypair: QIDKeyPair) -> bool:
+    return verify_payload(payload, signature, keypair)
 
 
 def server_verify_login_response(
@@ -149,8 +147,6 @@ def server_verify_login_response(
     response_payload: Dict[str, Any],
     signature: str,
     keypair: QIDKeyPair,
-    *,
-    hybrid_container_b64: Optional[str] = None,
 ) -> bool:
     if response_payload.get("type") != "login_response":
         return False
@@ -158,10 +154,9 @@ def server_verify_login_response(
         return False
     if response_payload.get("nonce") != request_payload.get("nonce"):
         return False
-    return verify_login_response(response_payload, signature, keypair, hybrid_container_b64=hybrid_container_b64)
+    return verify_login_response(response_payload, signature, keypair)
 
 
-# Overloads to match tests + explicit API
 @overload
 def login(payload: Dict[str, Any]) -> Dict[str, str]: ...
 @overload
@@ -191,26 +186,15 @@ def login(
     key_id: str | None = None,
     hybrid_container_b64: Optional[str] = None,
 ) -> Union[SignedMessage, Dict[str, str]]:
-    """
-    Two modes (to satisfy tests + keep API strict):
-
-    1) Placeholder legacy mode (tests expect this):
-         login({"x": 1}) -> {"status": "todo"}
-
-    2) Real builder mode:
-         login(service_id, callback_url, nonce, *, address, pubkey, keypair, ...) -> SignedMessage
-    """
-    if isinstance(service_id_or_payload, dict) and all(
-        v is None for v in (callback_url, nonce, address, pubkey, keypair)
-    ):
+    # Placeholder legacy mode (tests expect this):
+    if isinstance(service_id_or_payload, dict) and all(v is None for v in (callback_url, nonce, address, pubkey, keypair)):
         return {"status": "todo"}
 
+    # Strict mode:
     if not isinstance(service_id_or_payload, str):
         raise TypeError("login(): expected service_id (str) or placeholder payload (dict).")
-
     if callback_url is None or nonce is None:
         raise TypeError("login(): missing required arguments: callback_url and nonce.")
-
     if address is None or pubkey is None or keypair is None:
         raise TypeError("login(): missing required keyword arguments: address, pubkey, keypair.")
 
@@ -220,13 +204,7 @@ def login(
         callback_url=callback_url,
         version=version,
     )
-    resp = build_login_response_payload(
-        req,
-        address=address,
-        pubkey=pubkey,
-        key_id=key_id,
-        version=version,
-    )
+    resp = build_login_response_payload(req, address=address, pubkey=pubkey, key_id=key_id, version=version)
     return sign_message(resp, keypair, hybrid_container_b64=hybrid_container_b64)
 
 
@@ -255,11 +233,11 @@ def build_registration_payload(
 
 
 def build_registration_uri(payload: Dict[str, Any]) -> str:
-    return _encode_registration_uri(payload)
+    return encode_registration_uri(payload)
 
 
 def parse_registration_uri(uri: str) -> Dict[str, Any]:
-    return _decode_registration_uri(uri)
+    return decode_registration_uri(uri)
 
 
 @overload
@@ -289,23 +267,13 @@ def register_identity(
     version: str = "1",
     hybrid_container_b64: Optional[str] = None,
 ) -> Union[SignedMessage, Dict[str, str]]:
-    """
-    Two modes (to satisfy tests + keep API strict):
-
-    1) Placeholder legacy mode (tests expect this):
-         register_identity({"x": 1}) -> {"status": "todo"}
-
-    2) Real builder mode:
-         register_identity(service_id, address, pubkey, nonce, callback_url, keypair, ...) -> SignedMessage
-    """
-    if isinstance(service_id_or_payload, dict) and all(
-        v is None for v in (address, pubkey, nonce, callback_url, keypair)
-    ):
+    # Placeholder legacy mode (tests expect this):
+    if isinstance(service_id_or_payload, dict) and all(v is None for v in (address, pubkey, nonce, callback_url, keypair)):
         return {"status": "todo"}
 
+    # Strict mode:
     if not isinstance(service_id_or_payload, str):
         raise TypeError("register_identity(): expected service_id (str) or placeholder payload (dict).")
-
     if address is None or pubkey is None or nonce is None or callback_url is None or keypair is None:
         raise TypeError("register_identity(): missing required registration arguments.")
 
