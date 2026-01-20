@@ -7,6 +7,9 @@ Rules:
 - URL-safe base64 (no padding) for the `d=` payload parameter.
 - Payload bytes MUST be UTF-8 JSON.
 - Fail-closed decoding (raise ValueError).
+
+Backwards compatibility:
+Older modules/tests used function names with *_uri suffix. We provide aliases.
 """
 
 from __future__ import annotations
@@ -29,7 +32,6 @@ def _b64url_decode(token: str) -> bytes:
 
 
 def _extract_query_param(query: str, key: str) -> str | None:
-    # query is "k=v&a=b"
     for pair in query.split("&"):
         if not pair:
             continue
@@ -76,7 +78,7 @@ def decode_uri(uri: str, *, expected_action: str | None = None) -> Dict[str, Any
     return obj
 
 
-# Convenience wrappers used by existing code/tests
+# Preferred canonical names
 def encode_login_request(payload: Dict[str, Any]) -> str:
     return encode_uri("login", payload)
 
@@ -91,3 +93,20 @@ def encode_registration(payload: Dict[str, Any]) -> str:
 
 def decode_registration(uri: str) -> Dict[str, Any]:
     return decode_uri(uri, expected_action="register")
+
+
+# Backwards-compatible aliases used by protocol/tests
+def encode_login_request_uri(payload: Dict[str, Any]) -> str:
+    return encode_login_request(payload)
+
+
+def decode_login_request_uri(uri: str) -> Dict[str, Any]:
+    return decode_login_request(uri)
+
+
+def encode_registration_uri(payload: Dict[str, Any]) -> str:
+    return encode_registration(payload)
+
+
+def decode_registration_uri(uri: str) -> Dict[str, Any]:
+    return decode_registration(uri)
