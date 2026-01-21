@@ -154,7 +154,10 @@ def generate_keypair(alg: str = DEV_ALGO) -> QIDKeyPair:
     return QIDKeyPair(algorithm=norm, secret_key=_b64encode(secret), public_key=_b64encode(pub))
 
 
-def sign_payload(payload: Dict[str, Any], keypair: QIDKeyPair, *, hybrid_container_b64: Optional[str] = None) -> str:
+def sign_payload(keypair: QIDKeyPair, payload: Dict[str, Any], *, hybrid_container_b64: Optional[str] = None) -> str:
+    """
+    API surface contract v0.1 locks positional arg order: (keypair, payload).
+    """
     from qid.pqc_backends import PQCBackendError, enforce_no_silent_fallback_for_alg, liboqs_sign, selected_backend
     from qid.hybrid_key_container import try_decode_container
 
@@ -219,7 +222,16 @@ def sign_payload(payload: Dict[str, Any], keypair: QIDKeyPair, *, hybrid_contain
     raise ValueError(f"Unsupported algorithm for signing: {keypair.algorithm!r}")
 
 
-def verify_payload(payload: Dict[str, Any], signature: str, keypair: QIDKeyPair, *, hybrid_container_b64: Optional[str] = None) -> bool:
+def verify_payload(
+    keypair: QIDKeyPair,
+    payload: Dict[str, Any],
+    signature: str,
+    *,
+    hybrid_container_b64: Optional[str] = None,
+) -> bool:
+    """
+    API surface contract v0.1 expected style: keypair-first, payload next.
+    """
     from qid.pqc_backends import PQCBackendError, enforce_no_silent_fallback_for_alg, liboqs_verify, selected_backend
     from qid.hybrid_key_container import try_decode_container
 
@@ -266,7 +278,10 @@ def verify_payload(payload: Dict[str, Any], signature: str, keypair: QIDKeyPair,
             pub_ml = _b64decode(container.ml_dsa.public_key)
             pub_fa = _b64decode(container.falcon.public_key)
 
-            return bool(liboqs_verify(ML_DSA_ALGO, msg, sig_ml, pub_ml) and liboqs_verify(FALCON_ALGO, msg, sig_fa, pub_fa))
+            return bool(
+                liboqs_verify(ML_DSA_ALGO, msg, sig_ml, pub_ml)
+                and liboqs_verify(FALCON_ALGO, msg, sig_fa, pub_fa)
+            )
         except PQCBackendError:
             return False
         except Exception:
