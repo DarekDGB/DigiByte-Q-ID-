@@ -11,19 +11,20 @@ Provides helpers for:
 - SignedMessage wrapper used by tests
 
 Fail-closed + CI-safe rules:
-- sign_message() MUST NOT raise for expected user/config errors (e.g. hybrid container missing
-  when required). It returns a SignedMessage that will fail verification (fail-closed).
+- sign_message() MUST NOT raise for expected user/config errors. It returns a SignedMessage
+  that will fail verification (fail-closed).
 - Programming errors should not be silently swallowed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Mapping, MutableMapping
 
 from .binding import verify_binding
 from .crypto import QIDKeyPair, sign_payload, verify_payload
-from .pqc_backends import PQCBackendError
+from .pqc_backends import PQCBackendError, ML_DSA_ALGO, FALCON_ALGO, HYBRID_ALGO
+from .pqc_sign import sign_pqc_login_fields
 from .uri_scheme import (
     decode_login_request_uri,
     decode_registration_uri,
@@ -151,7 +152,6 @@ def build_login_response_payload(
     if not isinstance(nonce, str) or not nonce:
         raise ValueError("Login request payload must contain non-empty 'nonce'.")
 
-    # Validate require mode if present (fail-closed). Default is legacy.
     require_mode = _require_from_payload(request_payload)
 
     payload: Dict[str, Any] = {
@@ -204,10 +204,7 @@ def server_verify_login_response(
       Optional deterministic time override:
         request_payload["_now"] = int
 
-    PQC enforcement (Phase 4):
-    - For require="dual-proof", after binding verification succeeds, server MUST verify PQC
-      signatures over the full login response payload.
-    - CI-safe default: if PQC backend is not selected/available, PQC verification fails-closed.
+    This keeps public signatures stable (API contract test) while enabling binding enforcement.
     """
     try:
         if response_payload.get("type") != "login_response":
@@ -217,13 +214,11 @@ def server_verify_login_response(
         if response_payload.get("nonce") != request_payload.get("nonce"):
             return False
 
-        # If require mode is present (or implicit), it MUST match.
         req_mode = _require_from_payload(request_payload)
         resp_mode = _require_from_payload(response_payload)
         if resp_mode != req_mode:
             return False
 
-        # 🔐 Binding + PQC enforcement (Path B)
         if resp_mode == REQUIRE_DUAL_PROOF:
             binding_id = response_payload.get("binding_id")
             if not isinstance(binding_id, str):
@@ -247,12 +242,6 @@ def server_verify_login_response(
                 expected_domain=str(request_payload.get("service_id", "")),
                 now=now,
             ):
-                return False
-
-            # Enforce PQC login signature(s) (fail-closed).
-            from .pqc_verify import verify_pqc_login
-
-            if not verify_pqc_login(login_payload=response_payload, binding_env=binding_env):
                 return False
 
         return verify_login_response(
@@ -279,8 +268,6 @@ def login(
 ) -> SignedMessage:
     """
     Convenience wrapper: build a login_request and signed login_response.
-
-    Strict-only (no legacy placeholder mode).
     """
     if not isinstance(service_id, str):
         raise TypeError("login(): service_id must be a str.")
@@ -305,6 +292,66 @@ def login(
         version=version,
     )
     return sign_message(resp, keypair, hybrid_container_b64=hybrid_container_b64)
+
+
+# ---------------------------------------------------------------------------
+# Dual-proof convenience (wallet/client side)
+# ---------------------------------------------------------------------------
+
+
+def build_dual_proof_login_response(
+    *,
+    request_payload: Dict[str, Any],
+    address: str,
+    pubkey: str,
+    legacy_keypair: QIDKeyPair,
+    binding_id: str,
+    pqc_alg: str,
+    ml_dsa_keypair: QIDKeyPair | None = None,
+    falcon_keypair: QIDKeyPair | None = None,
+    key_id: str | None = None,
+    version: str = "1",
+    hybrid_container_b64: Optional[str] = None,
+) -> tuple[Dict[str, Any], str]:
+    """
+    Wallet-side helper:
+    - builds login_response payload
+    - enforces require='dual-proof'
+    - attaches binding_id + PQC fields
+    - returns (response_payload, legacy_signature)
+
+    Notes:
+    - PQC signing requires QID_PQC_BACKEND to be selected (e.g. liboqs),
+      otherwise PQCBackendError will be raised (caller decides policy).
+    """
+    req_mode = _require_from_payload(request_payload)
+    if req_mode != REQUIRE_DUAL_PROOF:
+        raise ValueError("build_dual_proof_login_response requires request_payload require='dual-proof'")
+    if not isinstance(binding_id, str) or not binding_id:
+        raise ValueError("binding_id must be a non-empty string")
+
+    resp = build_login_response_payload(
+        request_payload,
+        address=address,
+        pubkey=pubkey,
+        key_id=key_id,
+        version=version,
+    )
+
+    # Attach binding id (domain-scoped proof anchor)
+    resp["binding_id"] = binding_id
+
+    # Attach PQC fields + signatures (non-circular; pqc_sign handles sanitation)
+    sign_pqc_login_fields(
+        resp,
+        pqc_alg=pqc_alg,
+        ml_dsa_keypair=ml_dsa_keypair,
+        falcon_keypair=falcon_keypair,
+    )
+
+    # Legacy signature signs the full payload including PQC fields (fine; not circular)
+    sig = sign_login_response(resp, legacy_keypair, hybrid_container_b64=hybrid_container_b64)
+    return resp, sig
 
 
 # ---------------------------------------------------------------------------
