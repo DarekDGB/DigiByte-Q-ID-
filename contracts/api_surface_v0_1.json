@@ -8,6 +8,23 @@
     { "import": "qid.protocol:build_login_request_uri", "args": ["payload"], "kwonly": [] },
     { "import": "qid.protocol:parse_login_request_uri", "args": ["uri"], "kwonly": [] },
     { "import": "qid.protocol:server_verify_login_response", "args": ["request_payload", "response_payload", "signature", "keypair"], "kwonly": ["hybrid_container_b64"] },
+    {
+      "import": "qid.protocol:build_dual_proof_login_response",
+      "args": [],
+      "kwonly": [
+        "request_payload",
+        "address",
+        "pubkey",
+        "legacy_keypair",
+        "binding_id",
+        "pqc_alg",
+        "ml_dsa_keypair",
+        "falcon_keypair",
+        "key_id",
+        "version",
+        "hybrid_container_b64"
+      ]
+    },
     { "import": "qid.protocol:login", "args": ["service_id", "callback_url", "nonce"], "kwonly": ["address", "pubkey", "keypair", "version", "key_id", "hybrid_container_b64"] },
     { "import": "qid.protocol:register_identity", "args": ["service_id", "address", "pubkey", "nonce", "callback_url", "keypair"], "kwonly": ["version", "hybrid_container_b64"] },
     { "import": "qid.uri_scheme:encode_login_request_uri", "args": ["payload"], "kwonly": [] },
