@@ -8,10 +8,6 @@ from qid import pqc_backends
 from qid.qr_payloads import build_qr_payload, parse_qr_payload
 
 
-# ---------------------------------------------------------------------------
-# binding.py: exercise remaining fail-closed branches
-# ---------------------------------------------------------------------------
-
 def test_verify_binding_rejects_non_mapping_and_bad_shapes() -> None:
     kp = generate_keypair()
 
@@ -33,17 +29,9 @@ def test_verify_binding_expiry_branch_with_now_default() -> None:
         created_at=100,
         expires_at=1,
     )
-    env = {
-        "payload": payload,
-        "sig": "bad",
-        "binding_id": "bad",
-    }
+    env = {"payload": payload, "sig": "bad", "binding_id": "bad"}
     assert verify_binding(env, kp, expected_domain="example.com", now=None) is False
 
-
-# ---------------------------------------------------------------------------
-# pqc_backends.py: cover unknown backend + invalid oqs module + fail-closed verify
-# ---------------------------------------------------------------------------
 
 def test_pqc_enforce_unknown_backend_raises() -> None:
     old = os.environ.get("QID_PQC_BACKEND")
@@ -98,16 +86,12 @@ def test_pqc_verify_fail_closed_on_internal_exception() -> None:
         pqc_backends._import_oqs = old_import  # type: ignore[assignment]
 
 
-# ---------------------------------------------------------------------------
-# qr_payloads.py: cover remaining lines (API takes a single dict argument)
-# ---------------------------------------------------------------------------
-
 def test_qr_payload_roundtrip() -> None:
     raw = {
         "type": "login_request",
         "data": {"service_id": "s", "nonce": "n"},
     }
-    payload = build_qr_payload(raw)
+    payload = build_qr_payload(raw)  # <-- correct API: single dict argument
     parsed = parse_qr_payload(payload)
     assert parsed["type"] == "login_request"
     assert parsed["data"]["service_id"] == "s"
