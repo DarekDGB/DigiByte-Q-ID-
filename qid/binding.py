@@ -1,10 +1,26 @@
+"""
+MIT License
+Copyright (c) 2025 DarekDGB
+
+Binding envelopes for DigiByte Q-ID.
+
+Design goals:
+- Deterministic binding_id computed from canonical payload bytes.
+- Fail-closed verification: any malformed input returns False (never raises).
+- Time rules:
+  - created_at MUST be <= now (using provided now, else wall clock) to prevent "future-issued" bindings.
+  - expires_at (if present) MUST be >= now.
+- Signature rules:
+  - envelope MUST contain a non-empty signature field: `sig` (preferred) or legacy `signature`.
+  - signature MUST verify over the payload.
+"""
+
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
 import time
-from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, TypedDict, Literal
 
 from qid.crypto import QIDKeyPair, sign_payload, verify_payload
@@ -50,17 +66,19 @@ def normalize_domain(domain: str) -> str:
     d = domain.strip().lower()
     if not d:
         raise ValueError("domain must be non-empty")
-    if "://" in d or "/" in d:
-        raise ValueError("domain must not include scheme or path")
+    if "://" in d:
+        raise ValueError("domain must not include scheme")
+    if "/" in d:
+        raise ValueError("domain must not include path")
     return d
 
 
-def compute_binding_id(payload: Mapping[str, Any]) -> str:
+def compute_binding_id(payload: BindingPayload) -> str:
     """
-    Deterministic binding id:
-    binding_id = base64url( sha256( canonical_json(payload) ) )
+    Deterministic binding_id = b64url(sha256(canonical_json(payload))).
     """
-    h = hashlib.sha256(_canonical_json(payload)).digest()
+    raw = _canonical_json(payload)
+    h = hashlib.sha256(raw).digest()
     return _b64url_encode(h)
 
 
@@ -79,40 +97,36 @@ def validate_binding_payload(payload: Mapping[str, Any]) -> None:
         raise ValueError("binding payload type must be 'binding'")
 
     domain = payload.get("domain")
-    address = payload.get("address")
-    policy = payload.get("policy")
-    pqc = payload.get("pqc_pubkeys")
-    created_at = payload.get("created_at")
-    expires_at = payload.get("expires_at", None)
-
-    if not isinstance(domain, str):
-        raise TypeError("binding payload 'domain' must be a string")
+    if not isinstance(domain, str) or not domain:
+        raise ValueError("binding payload 'domain' must be a non-empty string")
     _ = normalize_domain(domain)
 
+    address = payload.get("address")
     if not isinstance(address, str) or not address:
         raise ValueError("binding payload 'address' must be a non-empty string")
 
-    if policy not in {"ml-dsa", "falcon", "hybrid"}:
+    policy = payload.get("policy")
+    if policy not in ("ml-dsa", "falcon", "hybrid"):
         raise ValueError("binding payload 'policy' must be 'ml-dsa', 'falcon', or 'hybrid'")
 
-    if not isinstance(pqc, dict):
-        raise TypeError("binding payload 'pqc_pubkeys' must be an object")
+    pqc = payload.get("pqc_pubkeys")
+    if not isinstance(pqc, Mapping):
+        raise ValueError("binding payload 'pqc_pubkeys' must be a mapping")
 
     ml = pqc.get("ml_dsa")
     fa = pqc.get("falcon")
 
-    # Allow None for unused key slots depending on policy.
-    if policy == "ml-dsa" and not isinstance(ml, str):
-        raise ValueError("policy 'ml-dsa' requires pqc_pubkeys.ml_dsa")
-    if policy == "falcon" and not isinstance(fa, str):
-        raise ValueError("policy 'falcon' requires pqc_pubkeys.falcon")
-    if policy == "hybrid":
-        if not isinstance(ml, str) or not isinstance(fa, str):
-            raise ValueError("policy 'hybrid' requires both pqc_pubkeys.ml_dsa and pqc_pubkeys.falcon")
+    # policy gating for required keys
+    if policy in ("ml-dsa", "hybrid") and not isinstance(ml, str):
+        raise ValueError("binding payload requires 'pqc_pubkeys.ml_dsa' for policy ml-dsa/hybrid")
+    if policy in ("falcon", "hybrid") and not isinstance(fa, str):
+        raise ValueError("binding payload requires 'pqc_pubkeys.falcon' for policy falcon/hybrid")
 
+    created_at = payload.get("created_at")
     if not isinstance(created_at, int):
         raise TypeError("binding payload 'created_at' must be an int")
 
+    expires_at = payload.get("expires_at", None)
     if expires_at is not None and not isinstance(expires_at, int):
         raise TypeError("binding payload 'expires_at' must be an int or null")
 
@@ -149,10 +163,7 @@ def build_binding_payload(
 
 def sign_binding(payload: BindingPayload, keypair: QIDKeyPair) -> BindingEnvelope:
     """
-    Sign binding payload using existing Q-ID signing (same keypair class used for login).
-    This is the long-term “binding statement” signature.
-
-    NOTE: Today keypair may be dev-hmac; later can be true ECDSA without changing this API.
+    Sign a binding payload and return a binding envelope.
     """
     validate_binding_payload(payload)
     sig = sign_payload(dict(payload), keypair)
@@ -171,9 +182,11 @@ def verify_binding(
     Verify binding envelope fail-closed.
 
     Checks:
+    - required fields present (binding_id, payload, signature)
     - binding_id matches payload hash
     - domain matches expected_domain (normalized)
-    - expiry (if present)
+    - created_at <= now (using provided now else wall clock)
+    - expiry (if present): now <= expires_at
     - signature verifies over payload
     """
     try:
@@ -181,29 +194,49 @@ def verify_binding(
             return False
 
         payload = envelope.get("payload")
-        sig = envelope.get("sig")
-        bid = envelope.get("binding_id")
-
-        if not isinstance(payload, Mapping) or not isinstance(sig, str) or not isinstance(bid, str):
+        if not isinstance(payload, Mapping):
             return False
 
+        bid = envelope.get("binding_id")
+        if not isinstance(bid, str) or not bid:
+            return False
+
+        # Accept preferred 'sig' and legacy 'signature' (but require one of them).
+        sig = envelope.get("sig")
+        if sig is None:
+            sig = envelope.get("signature")
+        if not isinstance(sig, str) or not sig:
+            return False
+
+        # Validate payload schema first (fail-closed)
         validate_binding_payload(payload)
 
+        # now must be int if provided
+        if now is not None and not isinstance(now, int):
+            return False
+
+        now_eff = int(time.time()) if now is None else now
+
+        created_at = payload.get("created_at")
+        if not isinstance(created_at, int):
+            return False
+        if created_at > now_eff:
+            return False
+
+        exp = payload.get("expires_at", None)
+        if exp is not None:
+            if not isinstance(exp, int):
+                return False
+            if now_eff > exp:
+                return False
+
         # binding_id must match payload hash
-        if bid != compute_binding_id(payload):
+        if bid != compute_binding_id(payload):  # type: ignore[arg-type]
             return False
 
         # domain must match expected
-        if normalize_domain(payload["domain"]) != normalize_domain(expected_domain):
+        if normalize_domain(str(payload.get("domain", ""))) != normalize_domain(expected_domain):
             return False
-
-        # expiry check if set
-        exp = payload.get("expires_at", None)
-        if exp is not None:
-            if now is None:
-                now = int(time.time())
-            if int(now) > int(exp):
-                return False
 
         # signature must verify over payload
         return bool(verify_payload(dict(payload), sig, keypair))
