@@ -19,11 +19,11 @@ Fail-closed + CI-safe rules:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Callable
+from typing import Any, Dict, Optional
 
+from .binding import verify_binding
 from .crypto import QIDKeyPair, sign_payload, verify_payload
 from .pqc_backends import PQCBackendError
-from .binding import verify_binding
 from .uri_scheme import (
     decode_login_request_uri,
     decode_registration_uri,
@@ -38,6 +38,10 @@ from .uri_scheme import (
 REQUIRE_LEGACY = "legacy"
 REQUIRE_DUAL_PROOF = "dual-proof"
 _ALLOWED_REQUIRE = {REQUIRE_LEGACY, REQUIRE_DUAL_PROOF}
+
+# Reserved, non-serialized keys for Python integration (do not put into QR/URI JSON).
+_BINDING_RESOLVER_KEY = "_binding_resolver"
+_NOW_KEY = "_now"
 
 
 def _require_from_payload(p: Dict[str, Any]) -> str:
@@ -137,23 +141,18 @@ def build_login_response_payload(
     request_payload: Dict[str, Any],
     address: str,
     pubkey: str,
-    *,
-    binding_id: Optional[str] = None,
     key_id: str | None = None,
     version: str = "1",
 ) -> Dict[str, Any]:
     service_id = request_payload.get("service_id")
     nonce = request_payload.get("nonce")
-
     if not isinstance(service_id, str) or not service_id:
         raise ValueError("Login request payload must contain non-empty 'service_id'.")
     if not isinstance(nonce, str) or not nonce:
         raise ValueError("Login request payload must contain non-empty 'nonce'.")
 
+    # Validate require mode if present (fail-closed). Default is legacy.
     require_mode = _require_from_payload(request_payload)
-
-    if require_mode == REQUIRE_DUAL_PROOF and not isinstance(binding_id, str):
-        raise ValueError("dual-proof login requires binding_id")
 
     payload: Dict[str, Any] = {
         "type": "login_response",
@@ -164,12 +163,8 @@ def build_login_response_payload(
         "require": require_mode,
         "version": version,
     }
-
-    if binding_id is not None:
-        payload["binding_id"] = binding_id
     if key_id is not None:
         payload["key_id"] = key_id
-
     return payload
 
 
@@ -198,10 +193,19 @@ def server_verify_login_response(
     signature: str,
     keypair: QIDKeyPair,
     *,
-    binding_resolver: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
-    now: Optional[int] = None,
     hybrid_container_b64: Optional[str] = None,
 ) -> bool:
+    """
+    Server-side verification for login responses.
+
+    Binding Path B (no API surface changes):
+    - For require="dual-proof", the server must provide a resolver callable via:
+        request_payload["_binding_resolver"] = callable(binding_id) -> binding_envelope | None
+      Optional deterministic time override:
+        request_payload["_now"] = int
+
+    This keeps public signatures stable (API contract test) while enabling binding enforcement.
+    """
     try:
         if response_payload.get("type") != "login_response":
             return False
@@ -210,6 +214,7 @@ def server_verify_login_response(
         if response_payload.get("nonce") != request_payload.get("nonce"):
             return False
 
+        # If require mode is present (or implicit), it MUST match.
         req_mode = _require_from_payload(request_payload)
         resp_mode = _require_from_payload(response_payload)
         if resp_mode != req_mode:
@@ -220,17 +225,23 @@ def server_verify_login_response(
             binding_id = response_payload.get("binding_id")
             if not isinstance(binding_id, str):
                 return False
-            if binding_resolver is None:
+
+            resolver = request_payload.get(_BINDING_RESOLVER_KEY)
+            if resolver is None or not callable(resolver):
                 return False
 
-            binding_env = binding_resolver(binding_id)
+            binding_env = resolver(binding_id)
             if binding_env is None:
+                return False
+
+            now = request_payload.get(_NOW_KEY)
+            if now is not None and not isinstance(now, int):
                 return False
 
             if not verify_binding(
                 binding_env,
                 keypair,
-                expected_domain=request_payload["service_id"],
+                expected_domain=str(request_payload.get("service_id", "")),
                 now=now,
             ):
                 return False
@@ -241,7 +252,6 @@ def server_verify_login_response(
             keypair,
             hybrid_container_b64=hybrid_container_b64,
         )
-
     except Exception:
         return False
 
@@ -256,7 +266,6 @@ def login(
     keypair: QIDKeyPair,
     version: str = "1",
     key_id: str | None = None,
-    binding_id: Optional[str] = None,
     hybrid_container_b64: Optional[str] = None,
 ) -> SignedMessage:
     """
@@ -283,7 +292,6 @@ def login(
         req,
         address=address,
         pubkey=pubkey,
-        binding_id=binding_id,
         key_id=key_id,
         version=version,
     )
