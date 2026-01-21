@@ -44,5 +44,6 @@ jobs:
       - name: Run tests with real PQC backend
         env:
           QID_PQC_BACKEND: liboqs
+          QID_PQC_TESTS: "1"
         run: |
           python -m pytest -q
