@@ -38,3 +38,5 @@ fail_under = 90
 
 [tool.setuptools]
 packages = ["qid"]
+
+[tool.setuptools] and packages = ["qid"]
