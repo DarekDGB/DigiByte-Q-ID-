@@ -19,12 +19,13 @@ Fail-closed + CI-safe rules:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Mapping, MutableMapping
+from typing import Any, Dict, Optional
 
 from .binding import verify_binding
 from .crypto import QIDKeyPair, sign_payload, verify_payload
-from .pqc_backends import PQCBackendError, ML_DSA_ALGO, FALCON_ALGO, HYBRID_ALGO
-from .pqc_sign import sign_pqc_login_fields
+from .pqc_backends import PQCBackendError
+from . import pqc_sign as _pqc_sign
+from . import pqc_verify as _pqc_verify
 from .uri_scheme import (
     decode_login_request_uri,
     decode_registration_uri,
@@ -124,7 +125,7 @@ def build_login_request_payload(
         "callback_url": callback_url,
         # Compatibility contract:
         # - Missing or legacy => Digi-ID compatible verification.
-        # - dual-proof => verifier MUST enforce binding + PQC (later layers).
+        # - dual-proof => verifier MUST enforce binding + PQC.
         "require": REQUIRE_LEGACY,
         "version": version,
     }
@@ -204,7 +205,9 @@ def server_verify_login_response(
       Optional deterministic time override:
         request_payload["_now"] = int
 
-    This keeps public signatures stable (API contract test) while enabling binding enforcement.
+    Fail-closed dual-proof policy:
+    - Binding must verify AND PQC signatures must verify.
+    - If PQC backend is not selected (CI default), PQC verification returns False -> fail-closed.
     """
     try:
         if response_payload.get("type") != "login_response":
@@ -218,6 +221,8 @@ def server_verify_login_response(
         resp_mode = _require_from_payload(response_payload)
         if resp_mode != req_mode:
             return False
+
+        binding_env = None
 
         if resp_mode == REQUIRE_DUAL_PROOF:
             binding_id = response_payload.get("binding_id")
@@ -242,6 +247,11 @@ def server_verify_login_response(
                 expected_domain=str(request_payload.get("service_id", "")),
                 now=now,
             ):
+                return False
+
+            # ✅ Stronger long-term: PQC proof MUST pass for dual-proof.
+            # If backend not selected or PQC fields missing/invalid -> False (fail-closed).
+            if not _pqc_verify.verify_pqc_login(login_payload=response_payload, binding_env=binding_env):
                 return False
 
         return verify_login_response(
@@ -321,8 +331,8 @@ def build_dual_proof_login_response(
     - returns (response_payload, legacy_signature)
 
     Notes:
-    - PQC signing requires QID_PQC_BACKEND to be selected (e.g. liboqs),
-      otherwise PQCBackendError will be raised (caller decides policy).
+    - PQC signing may raise PQCBackendError if caller selected a real backend but it's unavailable.
+      Caller decides whether to surface or handle it.
     """
     req_mode = _require_from_payload(request_payload)
     if req_mode != REQUIRE_DUAL_PROOF:
@@ -338,18 +348,16 @@ def build_dual_proof_login_response(
         version=version,
     )
 
-    # Attach binding id (domain-scoped proof anchor)
     resp["binding_id"] = binding_id
 
-    # Attach PQC fields + signatures (non-circular; pqc_sign handles sanitation)
-    sign_pqc_login_fields(
+    # IMPORTANT: call via module so tests can monkeypatch this safely.
+    _pqc_sign.sign_pqc_login_fields(
         resp,
         pqc_alg=pqc_alg,
         ml_dsa_keypair=ml_dsa_keypair,
         falcon_keypair=falcon_keypair,
     )
 
-    # Legacy signature signs the full payload including PQC fields (fine; not circular)
     sig = sign_login_response(resp, legacy_keypair, hybrid_container_b64=hybrid_container_b64)
     return resp, sig
 
