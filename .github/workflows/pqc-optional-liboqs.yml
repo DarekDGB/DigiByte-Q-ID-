@@ -17,29 +17,32 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build build-essential
 
-      - name: Install liboqs
+      - name: Build & install liboqs
         run: |
-          git clone https://github.com/open-quantum-safe/liboqs.git
+          git clone --depth 1 https://github.com/open-quantum-safe/liboqs.git
           cd liboqs
           mkdir build && cd build
           cmake -GNinja -DCMAKE_INSTALL_PREFIX=/usr/local ..
           ninja
           sudo ninja install
+          sudo ldconfig
 
       - name: Install Python dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -e .[test]
-
-      - name: Install liboqs Python wrapper (provides `oqs` module)
-        run: |
-          pip install "git+https://github.com/open-quantum-safe/liboqs-python.git"
+          python -m pip install --upgrade pip setuptools wheel
+          # Your package + dev tools
+          python -m pip install -e ".[dev]"
+          # Hard guarantee for CI
+          python -m pip install pytest pytest-cov
+          # Provides `oqs` module
+          python -m pip install "git+https://github.com/open-quantum-safe/liboqs-python.git"
 
       - name: Run tests with real PQC backend
         env:
