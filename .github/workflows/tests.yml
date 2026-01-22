@@ -7,8 +7,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11"]
 
@@ -20,11 +22,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: "pip"
 
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          # Ensure pytest/pytest-cov are always present on the runner.
+          # Prefer [test] extras for CI determinism; fall back to [dev] if that's what your project defines.
+          python -m pip install -e ".[test]"
 
       - name: Run tests (coverage >= 90%)
         run: |
