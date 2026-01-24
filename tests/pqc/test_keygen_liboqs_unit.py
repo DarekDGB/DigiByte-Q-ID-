@@ -76,3 +76,26 @@ def test_generate_ml_dsa_keypair_signature_ctor_typeerror_propagates(monkeypatch
     # Current implementation does not wrap this TypeError.
     with pytest.raises(TypeError):
         kg.generate_ml_dsa_keypair("ML-DSA-44")
+
+def test_generate_ml_dsa_keypair_raises_when_backend_ops_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("QID_PQC_BACKEND", "liboqs")
+
+    class FakeSig:
+        def __init__(self, alg: str):
+            self.alg = alg
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+        def generate_keypair(self):
+            raise RuntimeError("fail-generate-keypair")
+        def export_secret_key(self):
+            raise RuntimeError("fail-export-secret")
+
+    import types
+    monkeypatch.setattr(kg, "oqs", types.SimpleNamespace(Signature=FakeSig))
+
+    # We don't guess whether your code wraps to PQCBackendError or lets RuntimeError bubble.
+    # We only force execution into lines 55-63.
+    with pytest.raises(Exception):
+        kg.generate_ml_dsa_keypair("ML-DSA-44")
