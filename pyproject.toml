@@ -34,10 +34,7 @@ source = ["qid"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
-fail_under = 90
-omit = [
-  "qid/pqc/keygen_liboqs.py",
-]
+fail_under = 95
 
 [tool.setuptools.packages.find]
 include = ["qid*"]
