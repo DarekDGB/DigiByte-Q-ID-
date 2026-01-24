@@ -4,244 +4,196 @@ Copyright (c) 2025 DarekDGB
 -->
 
 # 🔐 DigiByte Q-ID
-## **Quantum-Ready Authentication Protocol with Hybrid Signatures, PQC Backends & Adamantine Integration**
-### **Developer Preview v0.1 — Designed for Long-Term Survivability**
+## Quantum-Ready Authentication Protocol with Signed Payloads & Optional PQC Backends
+### Developer Preview v0.1 (Contract-Locked)
 
-> **Q-ID operates fully standalone, and is designed to integrate with the Adamantine Wallet and the DigiByte Quantum Shield as future-compatible consumers of signed authentication events.**
-
----
-
-Q-ID is a **next-generation authentication protocol** engineered as the evolutionary successor to Digi-ID.  
-It is not a simple upgrade — it is a **complete redesign** around:
-
-- **Cryptographically signed authentication flows**
-- **PQC-ready signature backends (ML-DSA, Falcon)**
-- **Hybrid (dual-signature) support**
-- **Strict service binding & replay protection**
-- **Modular architecture** for wallets and services
-- **Adamantine-native integration helpers**
-- **Future-compatible Guardian / Shield telemetry**
-- **QR-first, passwordless login**
-- **Full test coverage & CI validation**
-
-This README is intentionally deep and technical — a full architectural brief for engineers reviewing the protocol.
-
-Q-ID is built to withstand not only today’s threats…  
-but also **the next cryptographic era**.
+> **DigiByte Q-ID is a standalone authentication protocol designed as a secure evolutionary successor to Digi-ID.**
+> It operates independently and provides integration helpers for Adamantine Wallet–style systems.
 
 ---
 
-# ⭐️ 1. Why Q-ID Exists
+## 1. What Q-ID Is (and Is Not)
 
-Legacy Digi-ID is elegant — but limited:
+**Q-ID is a cryptographically signed authentication protocol.**
 
-- ❌ No signature on login responses
-- ❌ No PQC migration path
-- ❌ No hybrid cryptography
-- ❌ No server-side verification standard
-- ❌ No strict service binding
-- ❌ No tamper detection
-- ❌ No nonce replay protection rules
+It provides:
+- deterministic payload signing
+- strict verification rules
+- replay protection via nonces
+- optional post-quantum cryptography (PQC)
+- hybrid (dual-algorithm) signatures
+- fail-closed security semantics
 
-Q-ID fixes this by introducing a **fully signed, verifiable authentication model** with a flexible cryptographic backend designed for a world where **quantum computers are real adversaries**.
+**Q-ID is NOT:**
+- a wallet
+- a key custody solution
+- a UX framework
+- an automatic PQC switcher
+- a background network service
+
+Wallets and services explicitly choose how to integrate it.
 
 ---
 
-# ⭐️ 2. High-Level Architecture
+## 2. Core Design Principles
+
+Q-ID is built around the following **non-negotiable guarantees**:
+
+- **Fail-closed** — any malformed input fails verification
+- **Deterministic** — canonical JSON, stable hashing
+- **No silent fallback** — PQC never degrades silently
+- **CI-safe by default** — no external crypto deps required
+- **Explicit opt-in for real PQC**
+- **Hybrid = strict AND**, never OR
+- **Test-locked contracts** (≥ 95% coverage enforced)
+
+---
+
+## 3. High-Level Flow
 
 ```
-┌─────────────────────────────────────────────┐
-│                 Client Wallet               │
-│                                             │
-│  Scan QR → Decode URI → Validate Service →  │
-│  Build Response → Sign Response → Send Back │
-└─────────────────────────────────────────────┘
-                    ▲              │
-                    │              ▼
-┌─────────────────────────────────────────────┐
-│                Service Backend              │
-│                                             │
-│    Issue Login URI → Verify Signature →     │
-│    Validate Nonce → Approve Session         │
-└─────────────────────────────────────────────┘
+Service → QR Login Request → Wallet
+Wallet → Signed Login Response → Service
+Service → Verify → Accept or Reject
 ```
 
-Q-ID is composed of four coherent layers:
+---
+
+## 4. Repository Structure
 
 ```
 qid/
-  crypto/           ← pluggable signature engines (DEV / PQC / HYBRID)
-  protocol/         ← core login / registration flows
-  integration/      ← Adamantine signing / verification helpers
-  examples/         ← demos (server, roundtrip, mobile)
+├─ crypto.py
+├─ protocol.py
+├─ binding.py
+├─ pqc_backends.py
+├─ pqc_sign.py
+├─ pqc_verify.py
+├─ hybrid_key_container.py
+├─ integration/
+│  └─ adamantine.py
+└─ uri_scheme.py
 ```
 
 ---
 
-# ⭐️ 3. Cryptographic Layer (PQC-Ready Architecture)
+## 5. Cryptographic Algorithms
 
-Q-ID ships with a **pluggable crypto backend system**.  
-Every keypair, signature, and verification step is bound to an explicit algorithm identifier.
+| Identifier | Purpose | Default Mode |
+|----------|--------|--------------|
+| `dev-hmac-sha256` | CI / development | Stub |
+| `pqc-ml-dsa` | ML-DSA (Dilithium family) | Stub → real via liboqs |
+| `pqc-falcon` | Falcon family | Stub → real via liboqs |
+| `pqc-hybrid-ml-dsa-falcon` | Hybrid (ML-DSA + Falcon) | Stub → real via container |
 
-| Algorithm Identifier            | Purpose                                  | Status |
-|--------------------------------|------------------------------------------|--------|
-| `dev-hmac-sha256`              | Development / CI / tests                 | ✔ Stable |
-| `pqc-ml-dsa`                   | ML-DSA (Dilithium family)                | ✔ CI-safe stub / real via liboqs |
-| `pqc-falcon`                   | Falcon family                            | ✔ CI-safe stub / real via liboqs |
-| `pqc-hybrid-ml-dsa-falcon`     | Hybrid (ML-DSA + Falcon)                 | ✔ CI-safe stub / container-required via liboqs |
-
-Legacy compatibility:
-- `hybrid-dev-ml-dsa` is accepted as a **legacy alias only** (do not use for new integrations).
-
-### Stub mode vs real PQC backend
-
-- **Default (stub mode):**
-  - Deterministic, CI-safe keys and signatures
-  - No external PQC dependency
-- **Real PQC mode:**
-  - Enabled by `QID_PQC_BACKEND=liboqs`
-  - Enforces real ML-DSA / Falcon signatures
-  - **Hybrid requires an explicit Hybrid Key Container**
-  - No silent fallback is allowed
+Legacy alias:
+- `hybrid-dev-ml-dsa` (compatibility only)
 
 ---
 
-# ⭐️ 4. Protocol Layer (Q-ID Core)
+## 6. Stub Mode vs Real PQC Mode
 
-The Q-ID protocol supports:
+### Default (CI-Safe Stub Mode)
 
-### ✔ Login Requests (Service → Wallet)
-- service ID
-- nonce
-- callback URL
-- versioning
-- algorithm awareness
+- No PQC dependencies required
+- Deterministic testable signatures
+- Used in CI and local development
 
-### ✔ Login Responses (Wallet → Service)
-- signed payload
-- strict validation of:
-  `service_id`, `callback_url`, `nonce`, `address`, `key_id`, `algorithm`
+### Real PQC Mode (Explicit Opt-In)
 
-### ✔ Registration Payloads
-- signed identity association
-- deterministic canonical encoding
-
-All payloads are **canonicalized**, **verified**, and **fail-closed**.
+```bash
+export QID_PQC_BACKEND=liboqs
+export QID_PQC_TESTS=1
+```
 
 ---
 
-# ⭐️ 5. Adamantine Wallet Integration
+## 7. Hybrid Signatures
 
-Q-ID provides **first-class integration helpers** for Adamantine:
+Hybrid signatures require **both** ML-DSA and Falcon to verify.
+Any failure ⇒ authentication fails.
 
+---
+
+## 8. Protocol Layer
+
+Supports:
+- login requests
+- login responses
+- registration payloads
+
+---
+
+## 9. Dual-Proof Mode
+
+When `require="dual-proof"`:
+1. legacy signature verified
+2. binding verified
+3. PQC signature(s) verified
+
+Fail-closed by design.
+
+---
+
+## 10. Adamantine Integration
+
+Module:
 ```
 qid.integration.adamantine
 ```
 
-These helpers:
-- build signed wallet responses
-- verify responses server-side
-- enforce strict service and callback binding
-- support DEV / PQC / HYBRID keypairs
-
-Wallet security, UX, and key custody remain **explicitly out of scope** for Q-ID.
+Helpers only. No key custody.
 
 ---
 
-# ⭐️ 6. Server-Side Verification
+## 11. QR & URI Handling
 
-Services verify login responses using strict rules:
-
-- nonce must match
-- service_id must match
-- callback_url must match
-- signature must verify
-- algorithm downgrade is forbidden
-
-Any mismatch ⇒ **authentication fails** (fail-closed).
-
-Reference implementation:
 ```
-examples/example_server.py
+qid://login?d=<base64url(json)>
 ```
 
 ---
 
-# ⭐️ 7. Mobile Integration (iOS / Android)
+## 12. Test Suite & CI
 
-Reference material lives in:
-```
-examples/mobile/qr_scanner_demo.md
-```
-
-Includes:
-- QR scanning flow
-- Base64URL decoding
-- canonical JSON rules
-- request / response examples
+- ≥95% coverage enforced
+- CI-safe default
+- Real PQC tests opt-in
 
 ---
 
-# ⭐️ 8. Test Suite & CI
+## 13. Threat Model
 
-Q-ID is covered by an extensive test suite:
-
-- crypto roundtrips
-- tamper detection
-- protocol validation
-- integration helpers
-- hybrid enforcement logic
-
-CI enforces **≥ 90% coverage** and fail-closed behavior.
+Partially inline. Dedicated document planned.
 
 ---
 
-# ⭐️ 9. Threat Model (Planned)
+## 14. Future Work
 
-A dedicated threat model document is **planned** and not yet committed.
-Security assumptions are currently documented inline and in contract specs.
+- Guardian / Shield telemetry
+- Extended threat modeling
 
----
-
-# ⭐️ 10. Migration Path & Future Work
-
-Q-ID is designed for:
-
-- Seamless PQC migration
-- Hybrid transition strategies
-- Wallet ecosystem expansion
-- Future Guardian / Shield signal consumption
-
-These are **architectural guarantees**, not yet active integrations.
+Non-binding.
 
 ---
 
-# ⭐️ 11. Contributing
+## 15. Contributing
 
-Q-ID is security-critical software.
-
-All contributions must preserve:
-- determinism
-- test coverage
-- contract correctness
-- fail-closed security
-
-See `CONTRIBUTING.md` before opening a PR.
+Security-critical project.
+Fail-closed, deterministic, tested.
 
 ---
 
-# ⭐️ 12. Summary
+## 16. Summary
 
-✔ Cryptographically signed authentication  
-✔ PQC-ready architecture  
-✔ Hybrid signature support  
-✔ Strict service binding  
-✔ QR-first workflows  
-✔ Adamantine-ready helpers  
-✔ Contract-driven design  
-✔ Fully tested & CI enforced  
+✔ Signed authentication  
+✔ Optional PQC backend  
+✔ Hybrid enforcement  
+✔ Fail-closed verification  
+✔ CI-safe default  
+✔ 95% coverage enforced  
 
 ---
 
-**MIT Licensed — @Darek_DGB**  
-Quantum-ready. Future-proof. DigiByte-strong.
+**MIT License — DarekDGB**  
+_Q-ID does not guess. It verifies._
