@@ -38,9 +38,11 @@ def _require_liboqs() -> None:
 
 
 def generate_ml_dsa_keypair(alg: str) -> Tuple[bytes, bytes]:
-    _require_liboqs()
+    # Fail-closed early on invalid algorithm (does not depend on backend availability)
     if alg not in ALLOWED_ML_DSA_ALGS:
         raise PQCAlgorithmError(f"ML-DSA algorithm not allowed: {alg}")
+
+    _require_liboqs()
 
     with oqs.Signature(alg) as sig:
         public_key = sig.generate_keypair()
@@ -49,9 +51,11 @@ def generate_ml_dsa_keypair(alg: str) -> Tuple[bytes, bytes]:
 
 
 def generate_falcon_keypair(alg: str) -> Tuple[bytes, bytes]:
-    _require_liboqs()
+    # Fail-closed early on invalid algorithm (does not depend on backend availability)
     if alg not in ALLOWED_FALCON_ALGS:
         raise PQCAlgorithmError(f"Falcon algorithm not allowed: {alg}")
+
+    _require_liboqs()
 
     with oqs.Signature(alg) as sig:
         public_key = sig.generate_keypair()
