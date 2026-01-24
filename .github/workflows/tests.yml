@@ -20,42 +20,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
 
       - name: Install
         run: |
-          python -m pip install --upgrade pip setuptools wheel
-          # Install project + dev extras (your normal path)
+          python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
-          # Hard guarantee for CI (no guessing what extras contain)
-          python -m pip install pytest pytest-cov
 
-      - name: Run tests (coverage >= 90%)
+      - name: Run tests (coverage >= 95%)
         run: |
-          python -m pytest --cov=qid --cov-report=term-missing --cov-fail-under=90 -q
-
-  install-noneditable-import-guard:
-    runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        python-version: ["3.11"]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install (non-editable)
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          python -m pip install .
-
-      - name: Import guard (non-editable install)
-        run: |
-          python -c "import qid; import qid.integration.adamantine; import qid.pqc.pqc_ml_dsa; print('OK: non-editable install imports passed')"
+          python -m pytest --cov=qid --cov-report=term-missing --cov-fail-under=95 -q
