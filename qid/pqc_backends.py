@@ -51,6 +51,16 @@ def selected_backend() -> str | None:
 def require_real_pqc() -> bool:
     return selected_backend() is not None
 
+def _oqs_alg_for(qid_alg: str) -> str:
+    """
+    Back-compat shim for tests that expect _oqs_alg_for().
+
+    Returns the *primary* liboqs algorithm name for a Q-ID alg.
+    Raises ValueError for unsupported algs (as tests require).
+    """
+    candidates = _oqs_alg_candidates_for(qid_alg)
+    return candidates[0]
+
 
 def _oqs_alg_candidates_for(qid_alg: str) -> tuple[str, ...]:
     if qid_alg not in _OQS_ALG_BY_QID:
