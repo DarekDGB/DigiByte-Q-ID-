@@ -4,16 +4,12 @@ from __future__ import annotations
 PQC verification for DigiByte Q-ID dual-proof logins.
 
 Contract:
-- Only used when protocol require="dual-proof".
 - Fail-closed:
   - If no backend selected => False.
   - If backend selected but unavailable/misconfigured => False.
   - If payload missing required fields => False.
 - No silent fallback:
   - If a real backend is selected, PQC algs MUST NOT degrade silently.
-
-Signing/verification input:
-- PQC signatures cover the login payload with PQC signature fields removed (non-circular).
 """
 
 import base64
@@ -39,12 +35,12 @@ def _b64url_decode(s: str) -> bytes:
 
 
 def canonical_payload_bytes(payload: Mapping[str, Any]) -> bytes:
-    # Deterministic canonicalization (stable keys, no whitespace)
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
 
 
 def _payload_for_pqc(login_payload: Mapping[str, Any]) -> dict[str, Any]:
-    # Copy and remove signature fields (non-circular signing)
     d = dict(login_payload)
     for k in _SIG_FIELDS:
         d.pop(k, None)
@@ -63,17 +59,9 @@ def _decode_sig(b64u: Any) -> bytes:
     return _b64url_decode(b64u)
 
 
-def verify_pqc_login(
-    *,
-    login_payload: Mapping[str, Any],
-    binding_env: Mapping[str, Any],
-) -> bool:
+def verify_pqc_login(login_payload: Mapping[str, Any], binding_env: Mapping[str, Any]) -> bool:
     """
-    Verify PQC signatures for dual-proof logins (fail-closed).
-
-    CI-safe policy:
-    - If no backend selected, return False (cannot claim PQC verification).
-    - If backend selected, enforce no silent fallback and verify via liboqs.
+    NOTE: Must accept positional args (tests call it positionally).
     """
     try:
         backend = selected_backend()
@@ -89,14 +77,12 @@ def verify_pqc_login(
         if not isinstance(policy, str) or not isinstance(pqc_keys, Mapping):
             return False
 
-        # Determine algorithm requested by login payload
         alg = login_payload.get("pqc_alg")
         if not isinstance(alg, str):
             return False
         if alg not in {ML_DSA_ALGO, FALCON_ALGO, HYBRID_ALGO}:
             return False
 
-        # Enforce "no silent fallback" for PQC algs when backend selected
         enforce_no_silent_fallback_for_alg(alg)
 
         msg = canonical_payload_bytes(_payload_for_pqc(login_payload))
@@ -115,9 +101,9 @@ def verify_pqc_login(
             sig = _decode_sig(login_payload.get("pqc_sig"))
             return bool(liboqs_verify(FALCON_ALGO, msg, sig, pub))
 
-        # HYBRID strict AND
         if policy != "hybrid":
             return False
+
         pub_ml = _decode_pubkey(pqc_keys.get("ml_dsa"))
         pub_fa = _decode_pubkey(pqc_keys.get("falcon"))
         sig_ml = _decode_sig(login_payload.get("pqc_sig_ml_dsa"))
