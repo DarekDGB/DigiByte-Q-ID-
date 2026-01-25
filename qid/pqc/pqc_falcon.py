@@ -6,16 +6,24 @@ from typing import Any
 def sign_falcon(*, oqs: Any, msg: bytes, priv: bytes, oqs_alg: str | None = None) -> bytes:
     alg = oqs_alg or "Falcon-512"
 
-    # IMPORTANT: create Signature inside the context manager to avoid pytest repr segfaults.
-    with oqs.Signature(alg) as s:
-        if hasattr(s, "import_secret_key"):
-            s.import_secret_key(priv)  # type: ignore[attr-defined]
-            return s.sign(msg)
+    signer = None  # IMPORTANT: del on error to avoid pytest repr segfaults
+    try:
+        with oqs.Signature(alg) as signer:
+            if hasattr(signer, "import_secret_key"):
+                signer.import_secret_key(priv)  # type: ignore[attr-defined]
+                return signer.sign(msg)
 
+            try:
+                return signer.sign(msg, priv)
+            except TypeError:
+                return signer.sign(msg)
+
+    except Exception:
         try:
-            return s.sign(msg, priv)
-        except TypeError:
-            return s.sign(msg)
+            del signer
+        except Exception:
+            pass
+        raise RuntimeError("pqc_falcon signing failed") from None
 
 
 def verify_falcon(
@@ -28,12 +36,21 @@ def verify_falcon(
 ) -> bool:
     alg = oqs_alg or "Falcon-512"
 
-    with oqs.Signature(alg) as v:
-        if hasattr(v, "import_public_key"):
-            v.import_public_key(pub)  # type: ignore[attr-defined]
-            return bool(v.verify(msg, sig))
+    verifier = None  # IMPORTANT: del on error to avoid pytest repr segfaults
+    try:
+        with oqs.Signature(alg) as verifier:
+            if hasattr(verifier, "import_public_key"):
+                verifier.import_public_key(pub)  # type: ignore[attr-defined]
+                return bool(verifier.verify(msg, sig))
 
+            try:
+                return bool(verifier.verify(msg, sig, pub))
+            except TypeError:
+                return bool(verifier.verify(msg, sig))
+
+    except Exception:
         try:
-            return bool(v.verify(msg, sig, pub))
-        except TypeError:
-            return bool(v.verify(msg, sig))
+            del verifier
+        except Exception:
+            pass
+        return False
