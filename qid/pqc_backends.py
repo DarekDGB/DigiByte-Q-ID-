@@ -11,7 +11,7 @@ Design goals (contract + tests):
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 import os
 
 
@@ -28,7 +28,7 @@ class PQCBackendError(RuntimeError):
 # We need three states for determinism in tests:
 # - UNSET: we have not attempted import yet (normal runtime)
 # - None: tests (or callers) explicitly disabled oqs by monkeypatching pb.oqs = None
-# - module: cached imported module (or a test double)
+# - module: cached imported module
 class _OQSUnset:
     pass
 
@@ -37,10 +37,10 @@ _OQS_UNSET = _OQSUnset()
 oqs: Any = _OQS_UNSET  # tests may monkeypatch to None or a fake module
 
 
-# Map Q-ID alg identifiers to liboqs algorithm names.
-# NOTE: tests use these identifiers, and liboqs uses the legacy names below.
+# Primary mapping used by tests via _oqs_alg_for().
+# We also keep candidates via _oqs_alg_candidates_for() to support older liboqs names.
 _OQS_ALG_BY_QID = {
-    ML_DSA_ALGO: "Dilithium2",  # ML-DSA-44 maps to Dilithium2 in liboqs naming
+    ML_DSA_ALGO: "ML-DSA-44",
     FALCON_ALGO: "Falcon-512",
 }
 
@@ -66,7 +66,7 @@ def require_real_pqc() -> bool:
 
 def _oqs_alg_for(qid_alg: str) -> str:
     """
-    Convert Q-ID alg identifier to liboqs algorithm name.
+    Convert Q-ID alg identifier to a primary liboqs algorithm name.
 
     IMPORTANT:
     - For non-PQC algs, this MUST raise ValueError (not PQCBackendError).
@@ -74,6 +74,21 @@ def _oqs_alg_for(qid_alg: str) -> str:
     if qid_alg not in _OQS_ALG_BY_QID:
         raise ValueError(f"Unsupported algorithm for liboqs: {qid_alg!r}")
     return _OQS_ALG_BY_QID[qid_alg]
+
+
+def _oqs_alg_candidates_for(qid_alg: str) -> list[str]:
+    """
+    Return ordered list of liboqs algorithm names for this Q-ID alg.
+
+    This allows compatibility across liboqs/python-oqs naming evolutions.
+    """
+    primary = _oqs_alg_for(qid_alg)
+    if qid_alg == ML_DSA_ALGO:
+        # Some stacks still expose Dilithium2 while newer stacks expose ML-DSA-44.
+        # Try the primary first, then fallback candidates (still "real PQC", not a stub fallback).
+        alts = ["Dilithium2"]
+        return [primary, *[a for a in alts if a != primary]]
+    return [primary]
 
 
 def _validate_oqs_module(mod: Any) -> None:
@@ -93,7 +108,7 @@ def _import_oqs() -> Any:
 
     Determinism contract for tests:
     - if tests monkeypatch `qid.pqc_backends.oqs = None` -> MUST raise PQCBackendError
-    - if oqs is already a cached module/test-double -> MUST validate and return it
+    - if oqs is a cached module object -> MUST validate and return WITHOUT importing
     - if oqs hasn't been imported yet -> attempt import (so tests can monkeypatch __import__)
     - if import fails -> PQCBackendError (WITHOUT exception context for stability)
     """
@@ -105,12 +120,12 @@ def _import_oqs() -> Any:
             "QID_PQC_BACKEND=liboqs selected but 'oqs' module is not available."
         )
 
-    # Cached already (real module or test double).
+    # Cached already (tests may set oqs to a fake module).
     if oqs is not _OQS_UNSET:
         _validate_oqs_module(oqs)
         return oqs
 
-    # First import attempt (must be a real import statement so monkeypatched __import__ is hit).
+    # First import attempt (must be real import statement so monkeypatched __import__ is hit).
     try:
         import oqs as mod  # type: ignore
     except Exception:
@@ -147,6 +162,90 @@ def enforce_no_silent_fallback_for_alg(qid_alg: str) -> None:
     _validate_oqs_module(mod)
 
 
+# ---- Robust liboqs helpers (handle python-oqs API differences) ----
+
+
+def _sig_ctx(mod: Any, alg: str, *, secret: bytes | None = None) -> Any:
+    """
+    Create a Signature object in the most compatible way we can.
+    """
+    Sig = getattr(mod, "Signature")
+    # Try constructor with secret_key first.
+    if secret is not None:
+        try:
+            return Sig(alg, secret_key=secret)  # type: ignore[arg-type]
+        except TypeError:
+            pass
+
+    # Fall back to plain constructor.
+    obj = Sig(alg)
+
+    # Import secret key if supported.
+    if secret is not None:
+        imp = getattr(obj, "import_secret_key", None)
+        if callable(imp):
+            imp(secret)
+        else:
+            # Some variants may expose settable secret_key attr.
+            try:
+                setattr(obj, "secret_key", secret)
+            except Exception:
+                # We'll let sign() fail deterministically.
+                pass
+
+    return obj
+
+
+def _try_sign_one(mod: Any, alg: str, msg: bytes, priv: bytes) -> bytes:
+    obj = _sig_ctx(mod, alg, secret=priv)
+
+    # Some versions are context managers; some are not.
+    try:
+        enter = getattr(obj, "__enter__", None)
+        exit_ = getattr(obj, "__exit__", None)
+        if callable(enter) and callable(exit_):
+            with obj as s:
+                out = s.sign(msg)
+        else:
+            out = obj.sign(msg)
+    except TypeError:
+        raise PQCBackendError("liboqs signing failed (Signature API mismatch)") from None
+    except PQCBackendError:
+        raise
+    except Exception:
+        raise PQCBackendError("liboqs signing failed") from None
+
+    try:
+        return bytes(out)
+    except Exception:
+        # If out is already bytes-like, bytes(out) works; otherwise fail closed.
+        raise PQCBackendError("liboqs signing failed") from None
+
+
+def _try_verify_one(mod: Any, alg: str, msg: bytes, sig: bytes, pub: bytes) -> bool:
+    Sig = getattr(mod, "Signature")
+    try:
+        obj = Sig(alg)
+    except TypeError:
+        raise PQCBackendError("Invalid oqs backend object: Signature ctor failed") from None
+
+    # Preferred: verify(sig, msg, pub) is common in python-oqs.
+    verify = getattr(obj, "verify", None)
+    if not callable(verify):
+        raise PQCBackendError("Invalid oqs backend object: missing verify()") from None
+
+    try:
+        # Try common call orders.
+        try:
+            return bool(verify(sig, msg, pub))
+        except TypeError:
+            return bool(verify(msg, sig, pub))
+    except (ValueError, PQCBackendError):
+        raise
+    except Exception:
+        return False
+
+
 def liboqs_sign(qid_alg: str, msg: bytes, priv: bytes) -> bytes:
     """
     Low-level sign using python-oqs.
@@ -156,32 +255,24 @@ def liboqs_sign(qid_alg: str, msg: bytes, priv: bytes) -> bytes:
     - Invalid oqs backend -> PQCBackendError
     - Any internal oqs failure -> PQCBackendError (stable message, no leaked context)
     """
-    oqs_alg = _oqs_alg_for(qid_alg)  # may raise ValueError
+    # Validate alg early (tests rely on ValueError before import).
+    _ = _oqs_alg_for(qid_alg)
+
     mod = _import_oqs()
     _validate_oqs_module(mod)
 
-    try:
-        if qid_alg == ML_DSA_ALGO:
-            from qid.pqc.pqc_ml_dsa import sign_ml_dsa
+    last_err: PQCBackendError | None = None
+    for oqs_alg in _oqs_alg_candidates_for(qid_alg):
+        try:
+            return _try_sign_one(mod, oqs_alg, msg, priv)
+        except PQCBackendError as e:
+            last_err = e
+            continue
 
-            return sign_ml_dsa(oqs=mod, msg=msg, priv=priv, oqs_alg=oqs_alg)
-
-        if qid_alg == FALCON_ALGO:
-            from qid.pqc.pqc_falcon import sign_falcon
-
-            return sign_falcon(oqs=mod, msg=msg, priv=priv, oqs_alg=oqs_alg)
-
-        # Hybrid is composed at a higher layer (strict AND)
-        raise ValueError(f"Unsupported algorithm for liboqs: {qid_alg!r}")
-
-    except TypeError:
-        # Signature ctor / API mismatch
-        raise PQCBackendError("liboqs signing failed (Signature API mismatch)") from None
-    except PQCBackendError:
-        raise
-    except Exception:
-        # Clean failure (no exception context)
-        raise PQCBackendError("liboqs signing failed") from None
+    # Deterministic: raise a stable error (prefer the last PQCBackendError message).
+    if last_err is not None:
+        raise last_err
+    raise PQCBackendError("liboqs signing failed") from None
 
 
 def liboqs_verify(qid_alg: str, msg: bytes, sig: bytes, pub: bytes) -> bool:
@@ -193,28 +284,19 @@ def liboqs_verify(qid_alg: str, msg: bytes, sig: bytes, pub: bytes) -> bool:
     - Unsupported alg -> ValueError
     - Internal verifier error -> False (fail-closed)
     """
-    oqs_alg = _oqs_alg_for(qid_alg)  # may raise ValueError
+    _ = _oqs_alg_for(qid_alg)
+
     mod = _import_oqs()
     _validate_oqs_module(mod)
 
-    try:
-        if qid_alg == ML_DSA_ALGO:
-            from qid.pqc.pqc_ml_dsa import verify_ml_dsa
-
-            return bool(
-                verify_ml_dsa(oqs=mod, msg=msg, sig=sig, pub=pub, oqs_alg=oqs_alg)
-            )
-
-        if qid_alg == FALCON_ALGO:
-            from qid.pqc.pqc_falcon import verify_falcon
-
-            return bool(
-                verify_falcon(oqs=mod, msg=msg, sig=sig, pub=pub, oqs_alg=oqs_alg)
-            )
-
-        raise ValueError(f"Unsupported algorithm for liboqs: {qid_alg!r}")
-
-    except (ValueError, PQCBackendError):
-        raise
-    except Exception:
-        return False
+    # For verify we can try multiple alg names, but must fail-closed on internal issues.
+    for oqs_alg in _oqs_alg_candidates_for(qid_alg):
+        try:
+            ok = _try_verify_one(mod, oqs_alg, msg, sig, pub)
+        except (ValueError, PQCBackendError):
+            raise
+        except Exception:
+            return False
+        if ok:
+            return True
+    return False
