@@ -114,9 +114,7 @@ def _import_oqs() -> Any:
 
     # Explicit "unavailable" knob (tests may set oqs=None)
     if oqs is None:
-        raise PQCBackendError(
-            "QID_PQC_BACKEND=liboqs selected but 'oqs' module is not available."
-        )
+        raise PQCBackendError("QID_PQC_BACKEND=liboqs selected but 'oqs' module is not available.")
 
     # If user selected liboqs AND tests (or embedder) injected a cached module-like
     # object, use it and do not import the real optional dep.
@@ -187,11 +185,21 @@ def liboqs_sign(qid_alg: str, msg: bytes, priv: bytes) -> bytes:
 
 
 def liboqs_verify(qid_alg: str, msg: bytes, sig: bytes, pub: bytes) -> bool:
-    # MUST raise ValueError for unsupported alg BEFORE importing oqs (tests rely on this).
+    """
+    Verify must be fail-closed.
+
+    Critical test contract:
+    - MUST raise ValueError for unsupported alg BEFORE importing oqs.
+    """
     candidates = _oqs_alg_candidates_for(qid_alg)
 
-    mod = _import_oqs()
-    _validate_oqs_module(mod)
+    try:
+        mod = _import_oqs()
+        _validate_oqs_module(mod)
+    except PQCBackendError:
+        return False
+    except Exception:
+        return False
 
     for oqs_alg in candidates:
         try:
@@ -207,9 +215,11 @@ def liboqs_verify(qid_alg: str, msg: bytes, sig: bytes, pub: bytes) -> bool:
 
             raise ValueError(f"Unsupported algorithm for liboqs: {qid_alg!r}")
 
-        except (ValueError, PQCBackendError):
+        except ValueError:
+            # Unsupported algorithm must propagate (contract).
             raise
         except Exception:
+            # Try next candidate or fail closed.
             continue
 
     return False
