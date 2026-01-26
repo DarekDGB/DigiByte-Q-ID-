@@ -14,14 +14,36 @@ from qid.pqc.pqc_ml_dsa import sign_ml_dsa, verify_ml_dsa
 from qid.pqc.pqc_falcon import sign_falcon, verify_falcon
 
 
+# --------------------------------------------------------------------
+# CRITICAL: no global state leaks (fixes your tests.yml failures)
+# --------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_pqc_backend_state(monkeypatch: pytest.MonkeyPatch):
+    """
+    This module intentionally injects fake oqs modules for unit coverage.
+
+    Guardrail:
+    - NEVER leak pb.oqs into other tests, because other tests rely on oqs NOT being installed.
+    - NEVER leak QID_PQC_BACKEND into other tests.
+
+    We reset before/after every test.
+    """
+    # before
+    monkeypatch.delenv("QID_PQC_BACKEND", raising=False)
+    monkeypatch.setattr(pb, "oqs", pb._OQS_UNSET, raising=False)
+    yield
+    # after
+    monkeypatch.delenv("QID_PQC_BACKEND", raising=False)
+    monkeypatch.setattr(pb, "oqs", pb._OQS_UNSET, raising=False)
+
+
 # -------------------------
 # Helpers: fake oqs module
 # -------------------------
 
 class _FakeSigNewAPI:
-    """
-    Newer API: oqs.Signature(alg, secret_key=priv) works.
-    """
+    """Newer API: oqs.Signature(alg, secret_key=priv) works."""
     def __init__(self, alg, secret_key=None):
         self.alg = alg
         self.secret_key = secret_key
@@ -33,7 +55,6 @@ class _FakeSigNewAPI:
         return False
 
     def sign(self, msg, *args):
-        # deterministic bytes signature
         return b"SIG:" + self.alg.encode("ascii") + b":" + msg
 
     def verify(self, msg, sig, pub):
@@ -55,7 +76,6 @@ class _FakeSigOldAPI_ImportSecret:
         if secret_key is not None:
             raise TypeError("old api: no secret_key kwarg")
         self.alg = alg
-        self._sec = None
 
     def __enter__(self):
         return self
@@ -67,7 +87,6 @@ class _FakeSigOldAPI_ImportSecret:
         self._sec = priv
 
     def sign(self, msg, *args):
-        # include secret marker to prove import path executed
         return b"SIGI:" + self.alg.encode("ascii") + b":" + msg
 
     def verify(self, msg, sig, pub):
@@ -179,7 +198,6 @@ def test_keygen_requires_backend_selected(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_keygen_uses_fallback_name_when_primary_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Force backend + inject fake oqs with Signature that fails on ML-DSA-44 but works on Dilithium2.
     monkeypatch.setenv("QID_PQC_BACKEND", "liboqs")
 
     class SigSelect:
@@ -211,17 +229,14 @@ def test_keygen_uses_fallback_name_when_primary_fails(monkeypatch: pytest.Monkey
 
 def test_pqc_backends_import_oqs_uses_injected_cached_module(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QID_PQC_BACKEND", "liboqs")
-    # Inject cached module-like object
-    pb.oqs = types.SimpleNamespace(Signature=_FakeSigNewAPI)
-
+    monkeypatch.setattr(pb, "oqs", types.SimpleNamespace(Signature=_FakeSigNewAPI))
     mod = pb._import_oqs()
     assert getattr(mod, "Signature") is _FakeSigNewAPI
 
 
 def test_pqc_backends_import_oqs_raises_when_real_import_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QID_PQC_BACKEND", "liboqs")
-    # Force "unset" so it tries real import
-    pb.oqs = pb._OQS_UNSET
+    monkeypatch.setattr(pb, "oqs", pb._OQS_UNSET, raising=False)
 
     real_import = builtins.__import__
 
@@ -237,9 +252,8 @@ def test_pqc_backends_import_oqs_raises_when_real_import_missing(monkeypatch: py
 
 def test_pqc_backends_liboqs_sign_propagates_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QID_PQC_BACKEND", "liboqs")
-    pb.oqs = types.SimpleNamespace(Signature=_FakeSigNewAPI)
+    monkeypatch.setattr(pb, "oqs", types.SimpleNamespace(Signature=_FakeSigNewAPI))
 
-    # Make the signing function raise PQCBackendError -> must propagate (coverage for except PQCBackendError: raise)
     import qid.pqc.pqc_ml_dsa as ml
     monkeypatch.setattr(ml, "sign_ml_dsa", lambda **kw: (_ for _ in ()).throw(pb.PQCBackendError("x")))
 
@@ -249,7 +263,7 @@ def test_pqc_backends_liboqs_sign_propagates_backend_error(monkeypatch: pytest.M
 
 def test_pqc_backends_liboqs_verify_propagates_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("QID_PQC_BACKEND", "liboqs")
-    pb.oqs = types.SimpleNamespace(Signature=_FakeSigNewAPI)
+    monkeypatch.setattr(pb, "oqs", types.SimpleNamespace(Signature=_FakeSigNewAPI))
 
     import qid.pqc.pqc_ml_dsa as ml
     monkeypatch.setattr(ml, "verify_ml_dsa", lambda **kw: (_ for _ in ()).throw(pb.PQCBackendError("x")))
