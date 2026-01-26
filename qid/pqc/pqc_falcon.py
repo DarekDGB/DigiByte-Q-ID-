@@ -4,12 +4,6 @@ from typing import Any
 
 
 def _sign_with_signature(sig_obj: Any, msg: bytes, priv: bytes) -> bytes:
-    """
-    Sign message using a Signature instance, supporting multiple APIs:
-    1) import_secret_key(priv) + sign(msg)   (real python-oqs/liboqs)
-    2) sign(msg, priv)                       (some stubs)
-    3) sign(msg)                             (if secret already bound)
-    """
     if hasattr(sig_obj, "import_secret_key") and callable(getattr(sig_obj, "import_secret_key")):
         sig_obj.import_secret_key(priv)
         return bytes(sig_obj.sign(msg))
@@ -36,10 +30,9 @@ def sign_falcon(*, oqs: Any, msg: bytes, priv: bytes, oqs_alg: str | None = None
 def verify_falcon(
     *, oqs: Any, msg: bytes, sig: bytes, pub: bytes, oqs_alg: str | None = None
 ) -> bool:
-    """Falcon verify — must fail-closed (return False) on internal errors."""
+    """Falcon verify — MUST fail-closed."""
     alg = oqs_alg or "Falcon-512"
 
-    verifier = None
     try:
         verifier = oqs.Signature(alg)
 
@@ -50,8 +43,3 @@ def verify_falcon(
         return bool(verifier.verify(msg, sig, pub))
     except Exception:
         return False
-    finally:
-        try:
-            del verifier
-        except Exception:
-            pass
