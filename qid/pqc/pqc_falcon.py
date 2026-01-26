@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from qid.pqc.pqc_ml_dsa import _set_secret_key
+
 
 def sign_falcon(*, oqs: Any, msg: bytes, priv: bytes, oqs_alg: str | None = None) -> bytes:
     """
@@ -14,18 +16,32 @@ def sign_falcon(*, oqs: Any, msg: bytes, priv: bytes, oqs_alg: str | None = None
     alg = oqs_alg or "Falcon-512"
     signer = None
     try:
-        try:
-            with oqs.Signature(alg, secret_key=priv) as signer:  # type: ignore[call-arg]
-                return signer.sign(msg)
-        except TypeError:
-            with oqs.Signature(alg) as signer:
-                if hasattr(signer, "import_secret_key"):
-                    signer.import_secret_key(priv)  # type: ignore[attr-defined]
-                    return signer.sign(msg)
-                try:
-                    return signer.sign(msg, priv)
-                except TypeError:
-                    return signer.sign(msg)
+        # Try ctor-based secret key injection (newer API variants).
+        for ctor_kwargs in ({"secret_key": priv}, {"sk": priv}):
+            try:
+                with oqs.Signature(alg, **ctor_kwargs) as signer:  # type: ignore[call-arg]
+                    try:
+                        sig = signer.sign(msg)
+                    except TypeError:
+                        sig = signer.sign(msg, priv)
+                    if sig is None:
+                        raise RuntimeError("signer.sign() returned None")
+                    return sig
+            except TypeError:
+                # Signature ctor doesn't accept those kwargs.
+                pass
+
+        # Older API: construct without secret key, then import/set, then sign.
+        with oqs.Signature(alg) as signer:
+            _set_secret_key(signer, priv)
+            try:
+                sig = signer.sign(msg)
+            except TypeError:
+                sig = signer.sign(msg, priv)
+            if sig is None:
+                raise RuntimeError("signer.sign() returned None")
+            return sig
+
     except Exception:
         try:
             del signer
