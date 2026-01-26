@@ -6,7 +6,8 @@ Design goals (contract + tests):
 - No silent fallback: if a real backend is selected, PQC algs MUST NOT silently degrade.
 - Deterministic behavior:
   - sign paths may raise PQCBackendError when backend selected but unavailable.
-  - verify paths MUST fail-closed (return False) on internal errors.
+  - verify paths MUST fail-closed (return False) on signature/verification errors,
+    but MUST raise PQCBackendError on backend wiring/validation problems (tests rely on this).
 """
 
 from __future__ import annotations
@@ -185,21 +186,12 @@ def liboqs_sign(qid_alg: str, msg: bytes, priv: bytes) -> bytes:
 
 
 def liboqs_verify(qid_alg: str, msg: bytes, sig: bytes, pub: bytes) -> bool:
-    """
-    Verify must be fail-closed.
-
-    Critical test contract:
-    - MUST raise ValueError for unsupported alg BEFORE importing oqs.
-    """
+    # MUST raise ValueError for unsupported alg BEFORE importing oqs (tests rely on this).
     candidates = _oqs_alg_candidates_for(qid_alg)
 
-    try:
-        mod = _import_oqs()
-        _validate_oqs_module(mod)
-    except PQCBackendError:
-        return False
-    except Exception:
-        return False
+    # Tests require PQCBackendError on invalid backend objects / wiring problems.
+    mod = _import_oqs()
+    _validate_oqs_module(mod)
 
     for oqs_alg in candidates:
         try:
@@ -215,11 +207,11 @@ def liboqs_verify(qid_alg: str, msg: bytes, sig: bytes, pub: bytes) -> bool:
 
             raise ValueError(f"Unsupported algorithm for liboqs: {qid_alg!r}")
 
-        except ValueError:
-            # Unsupported algorithm must propagate (contract).
+        except (ValueError, PQCBackendError):
+            # Unsupported alg or backend wiring errors must propagate (tests rely on this).
             raise
         except Exception:
-            # Try next candidate or fail closed.
+            # Verification errors fail-closed; try next candidate if available.
             continue
 
     return False
