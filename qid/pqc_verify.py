@@ -2,138 +2,144 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
+import base64
+import json
 
 from qid.pqc_backends import (
+    PQCBackendError,
+    ML_DSA_ALGO,
     FALCON_ALGO,
     HYBRID_ALGO,
-    ML_DSA_ALGO,
-    PQCBackendError,
     enforce_no_silent_fallback_for_alg,
     liboqs_verify,
     selected_backend,
 )
-from qid.pqc_sign import _b64url_decode, canonical_payload_bytes
 
 
-def _payload_for_pqc(login_payload: dict[str, Any]) -> dict[str, Any]:
-    """Return a shallow copy of the payload with PQC signature fields removed (non-circular)."""
-    d = dict(login_payload)
-    # remove both the algo selector and any signature material
-    d.pop("pqc_alg", None)
-    d.pop("pqc_sig", None)
-    d.pop("pqc_sig_ml_dsa", None)
-    d.pop("pqc_sig_falcon", None)
-    return d
+def _b64url_decode(s: str) -> bytes:
+    s2 = s.encode("utf-8")
+    pad = b"=" * ((4 - (len(s2) % 4)) % 4)
+    return base64.urlsafe_b64decode(s2 + pad)
 
 
-def _decode_pubkey(binding_env: dict[str, Any], which: str) -> bytes:
-    payload = binding_env.get("payload")
-    if not isinstance(payload, dict):
-        raise ValueError("binding_env.payload must be dict")
-    pubkeys = payload.get("pqc_pubkeys")
-    if not isinstance(pubkeys, dict):
-        raise ValueError("binding_env.payload.pqc_pubkeys must be dict")
-    b64u = pubkeys.get(which)
-    if not isinstance(b64u, str) or not b64u:
-        raise ValueError("missing pubkey")
-    return _b64url_decode(b64u)
-
-
-def _decode_sig(login_payload: dict[str, Any], which: str) -> bytes:
-    b64u = login_payload.get(which)
-    if not isinstance(b64u, str) or not b64u:
-        raise ValueError("missing signature")
-    return _b64url_decode(b64u)
-
-
-def verify_pqc_login(*, login_payload: dict[str, Any], binding_env: dict[str, Any]) -> bool:
+def _payload_for_pqc(src: Mapping[str, Any]) -> dict[str, Any]:
     """
-    Verify the PQC component of a login response.
+    Remove signature fields so the signed message is non-circular.
 
-    Contract:
-    - MUST be fail-closed: any internal error -> False
-    - MUST NOT silently fall back when a real backend is selected
+    Tests expect pqc_alg to be removed too.
     """
+    out = dict(src)
+    out.pop("pqc_alg", None)
+    out.pop("pqc_sig", None)
+    out.pop("pqc_sig_ml_dsa", None)
+    out.pop("pqc_sig_falcon", None)
+    return out
+
+
+def _decode_pubkey(binding_payload: Mapping[str, Any], which: str) -> bytes:
+    pubkeys = binding_payload.get("pqc_pubkeys")
+    if not isinstance(pubkeys, Mapping):
+        raise ValueError("binding payload missing pqc_pubkeys")
+    s = pubkeys.get(which)
+    if not isinstance(s, str) or not s:
+        raise ValueError("binding payload missing pubkey")
+    return _b64url_decode(s)
+
+
+def _decode_sig_field(login_payload: Mapping[str, Any], field: str) -> bytes:
+    s = login_payload.get(field)
+    if not isinstance(s, str) or not s:
+        raise ValueError("login payload missing signature field")
+    return _b64url_decode(s)
+
+
+def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
+    # Deterministic, minimal JSON
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def verify_pqc_login(*args: Any, **kwargs: Any) -> bool:
+    """
+    Fail-closed PQC login verification.
+
+    Supports BOTH calling styles used across tests:
+      - verify_pqc_login(login_payload, binding_env)
+      - verify_pqc_login(login_payload=..., binding_env=...)
+    """
+    # Accept positional or keyword forms.
+    login_payload = None
+    binding_env = None
+
+    if len(args) >= 1:
+        login_payload = args[0]
+    if len(args) >= 2:
+        binding_env = args[1]
+
+    if login_payload is None:
+        login_payload = kwargs.get("login_payload")
+    if binding_env is None:
+        binding_env = kwargs.get("binding_env")
+
     try:
+        if not isinstance(login_payload, Mapping) or not isinstance(binding_env, Mapping):
+            return False
+
         backend = selected_backend()
         if backend is None:
             return False
         if backend != "liboqs":
-            raise PQCBackendError(f"Unknown QID_PQC_BACKEND: {backend!r}")
+            return False
 
-        if not isinstance(login_payload, dict) or not isinstance(binding_env, dict):
+        # binding_env must provide a binding payload under "payload"
+        binding_payload = binding_env.get("payload")
+        if not isinstance(binding_payload, Mapping):
             return False
 
         alg = login_payload.get("pqc_alg")
         if not isinstance(alg, str):
             return False
 
-        # Early guardrail for chosen algorithm.
+        # Guardrail: if backend selected, PQC must be real.
         enforce_no_silent_fallback_for_alg(alg)
 
-        # Signature message is the canonical bytes of the binding payload (without PQC signatures).
-        msg = canonical_payload_bytes(_payload_for_pqc(login_payload))
-
-        payload = binding_env.get("payload")
-        if not isinstance(payload, dict):
-            return False
-        policy = payload.get("policy")
+        # Policy checks (fail closed)
+        policy = binding_payload.get("policy")
         if not isinstance(policy, str):
             return False
 
+        # Compute message bytes from sanitized binding payload
+        msg = _canonical_bytes(_payload_for_pqc(binding_payload))
+
         if alg == ML_DSA_ALGO:
-            # ML-DSA policy must match
             if policy not in {"ml-dsa", "hybrid"}:
                 return False
-            pub = _decode_pubkey(binding_env, "ml_dsa")
-            sig = _decode_sig(login_payload, "pqc_sig")
+            sig = _decode_sig_field(login_payload, "pqc_sig")
+            pub = _decode_pubkey(binding_payload, "ml_dsa")
             return bool(liboqs_verify(ML_DSA_ALGO, msg, sig, pub))
 
         if alg == FALCON_ALGO:
             if policy not in {"falcon", "hybrid"}:
                 return False
-            pub = _decode_pubkey(binding_env, "falcon")
-            sig = _decode_sig(login_payload, "pqc_sig")
+            sig = _decode_sig_field(login_payload, "pqc_sig")
+            pub = _decode_pubkey(binding_payload, "falcon")
             return bool(liboqs_verify(FALCON_ALGO, msg, sig, pub))
 
         if alg == HYBRID_ALGO:
             if policy != "hybrid":
                 return False
+            sig_ml = _decode_sig_field(login_payload, "pqc_sig_ml_dsa")
+            sig_fa = _decode_sig_field(login_payload, "pqc_sig_falcon")
+            pub_ml = _decode_pubkey(binding_payload, "ml_dsa")
+            pub_fa = _decode_pubkey(binding_payload, "falcon")
 
-            # Accept both shapes:
-            # - new: login_payload["pqc_sig"] is {"ml_dsa": "...", "falcon": "..."}
-            # - legacy: login_payload has "pqc_sig_ml_dsa" and "pqc_sig_falcon"
-            sig_ml_b64u: Any
-            sig_fa_b64u: Any
+            ok_ml = bool(liboqs_verify(ML_DSA_ALGO, msg, sig_ml, pub_ml))
+            ok_fa = bool(liboqs_verify(FALCON_ALGO, msg, sig_fa, pub_fa))
+            return bool(ok_ml and ok_fa)
 
-            sig_obj = login_payload.get("pqc_sig")
-            if isinstance(sig_obj, dict):
-                sig_ml_b64u = sig_obj.get("ml_dsa")
-                sig_fa_b64u = sig_obj.get("falcon")
-            else:
-                sig_ml_b64u = login_payload.get("pqc_sig_ml_dsa")
-                sig_fa_b64u = login_payload.get("pqc_sig_falcon")
-
-            if not isinstance(sig_ml_b64u, str) or not isinstance(sig_fa_b64u, str):
-                return False
-
-            sig_ml = _b64url_decode(sig_ml_b64u)
-            sig_fa = _b64url_decode(sig_fa_b64u)
-
-            pub_ml = _decode_pubkey(binding_env, "ml_dsa")
-            pub_fa = _decode_pubkey(binding_env, "falcon")
-
-            # strict AND
-            ok1 = bool(liboqs_verify(ML_DSA_ALGO, msg, sig_ml, pub_ml))
-            ok2 = bool(liboqs_verify(FALCON_ALGO, msg, sig_fa, pub_fa))
-            return ok1 and ok2
-
-        # Unknown PQC algorithm => fail-closed
         return False
 
     except (ValueError, PQCBackendError):
-        # Fail-closed: never raise from the verifier surface.
         return False
     except Exception:
         return False
