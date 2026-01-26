@@ -111,9 +111,6 @@ def _import_oqs() -> Any:
         _validate_oqs_module(oqs)
         return oqs
 
-    # Otherwise, try real import (CI-safe because this is only reached when:
-    # - backend is liboqs but oqs was not injected; or
-    # - some code path calls _import_oqs directly with unset oqs)
     try:
         import oqs as mod  # type: ignore
     except Exception:
@@ -144,6 +141,17 @@ def enforce_no_silent_fallback_for_alg(qid_alg: str) -> None:
 
 
 def liboqs_sign(qid_alg: str, msg: bytes, priv: bytes) -> bytes:
+    """
+    Deterministic guardrail:
+    - Real PQC signing is opt-in in CI via QID_PQC_TESTS=1.
+    - When backend is selected but tests are not opted in, fail fast (no signing).
+    """
+    if os.getenv("QID_PQC_TESTS") != "1":
+        raise PQCBackendError(
+            "PQC backend selected but PQC signing is disabled "
+            "(set QID_PQC_TESTS=1 to enable real PQC signing)"
+        )
+
     candidates = _oqs_alg_candidates_for(qid_alg)  # may raise ValueError
     mod = _import_oqs()
     _validate_oqs_module(mod)
