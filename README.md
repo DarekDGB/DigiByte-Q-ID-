@@ -156,7 +156,7 @@ qid://login?d=<base64url(json)>
 
 ## 12. Test Suite & CI
 
-- ≥95% coverage enforced
+- ≥90% coverage enforced
 - CI-safe default
 - Real PQC tests opt-in
 
@@ -191,7 +191,7 @@ Fail-closed, deterministic, tested.
 ✔ Hybrid enforcement  
 ✔ Fail-closed verification  
 ✔ CI-safe default  
-✔ 95% coverage enforced  
+✔ 90% coverage enforced  
 
 ---
 
