@@ -1,13 +1,37 @@
 {
   "version": "v0.1",
-  "frozen_at_tag": "v0.1.0-ci-locked",
+  "frozen_at_tag": "v0.1.2-ci-locked",
   "public_functions": [
-    { "import": "qid.crypto:generate_keypair", "args": ["alg"], "kwonly": [] },
-    { "import": "qid.crypto:sign_payload", "args": ["payload", "keypair"], "kwonly": ["hybrid_container_b64"] },
-    { "import": "qid.crypto:verify_payload", "args": ["payload", "signature", "keypair"], "kwonly": ["hybrid_container_b64"] },
-    { "import": "qid.protocol:build_login_request_uri", "args": ["payload"], "kwonly": [] },
-    { "import": "qid.protocol:parse_login_request_uri", "args": ["uri"], "kwonly": [] },
-    { "import": "qid.protocol:server_verify_login_response", "args": ["request_payload", "response_payload", "signature", "keypair"], "kwonly": ["hybrid_container_b64"] },
+    {
+      "import": "qid.crypto:generate_keypair",
+      "args": ["alg"],
+      "kwonly": []
+    },
+    {
+      "import": "qid.crypto:sign_payload",
+      "args": ["payload", "keypair"],
+      "kwonly": ["hybrid_container_b64"]
+    },
+    {
+      "import": "qid.crypto:verify_payload",
+      "args": ["payload", "signature", "keypair"],
+      "kwonly": ["hybrid_container_b64"]
+    },
+    {
+      "import": "qid.protocol:build_login_request_uri",
+      "args": ["payload"],
+      "kwonly": []
+    },
+    {
+      "import": "qid.protocol:parse_login_request_uri",
+      "args": ["uri"],
+      "kwonly": []
+    },
+    {
+      "import": "qid.protocol:server_verify_login_response",
+      "args": ["request_payload", "response_payload", "signature", "keypair"],
+      "kwonly": ["hybrid_container_b64"]
+    },
     {
       "import": "qid.protocol:build_dual_proof_login_response",
       "args": [],
@@ -25,13 +49,59 @@
         "hybrid_container_b64"
       ]
     },
-    { "import": "qid.protocol:login", "args": ["service_id", "callback_url", "nonce"], "kwonly": ["address", "pubkey", "keypair", "version", "key_id", "hybrid_container_b64"] },
-    { "import": "qid.protocol:register_identity", "args": ["service_id", "address", "pubkey", "nonce", "callback_url", "keypair"], "kwonly": ["version", "hybrid_container_b64"] },
-    { "import": "qid.uri_scheme:encode_login_request_uri", "args": ["payload"], "kwonly": [] },
-    { "import": "qid.uri_scheme:decode_login_request_uri", "args": ["uri"], "kwonly": [] },
-    { "import": "qid.qr_payloads:build_qr_payload", "args": ["payload"], "kwonly": [] },
-    { "import": "qid.qr_payloads:parse_qr_payload", "args": ["uri"], "kwonly": [] },
-    { "import": "qid.pqc_backends:selected_backend", "args": [], "kwonly": [] },
-    { "import": "qid.pqc_backends:enforce_no_silent_fallback_for_alg", "args": ["qid_alg"], "kwonly": [] }
+    {
+      "import": "qid.protocol:login",
+      "args": ["service_id", "callback_url", "nonce"],
+      "kwonly": [
+        "address",
+        "pubkey",
+        "keypair",
+        "version",
+        "key_id",
+        "hybrid_container_b64"
+      ]
+    },
+    {
+      "import": "qid.protocol:register_identity",
+      "args": [
+        "service_id",
+        "address",
+        "pubkey",
+        "nonce",
+        "callback_url",
+        "keypair"
+      ],
+      "kwonly": ["version", "hybrid_container_b64"]
+    },
+    {
+      "import": "qid.uri_scheme:encode_login_request_uri",
+      "args": ["payload"],
+      "kwonly": []
+    },
+    {
+      "import": "qid.uri_scheme:decode_login_request_uri",
+      "args": ["uri"],
+      "kwonly": []
+    },
+    {
+      "import": "qid.qr_payloads:build_qr_payload",
+      "args": ["payload"],
+      "kwonly": []
+    },
+    {
+      "import": "qid.qr_payloads:parse_qr_payload",
+      "args": ["uri"],
+      "kwonly": []
+    },
+    {
+      "import": "qid.pqc_backends:selected_backend",
+      "args": [],
+      "kwonly": []
+    },
+    {
+      "import": "qid.pqc_backends:enforce_no_silent_fallback_for_alg",
+      "args": ["qid_alg"],
+      "kwonly": []
+    }
   ]
 }
